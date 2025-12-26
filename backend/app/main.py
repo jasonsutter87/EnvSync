@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, projects, environments, variables, sync, teams, admin
+from app.api import auth, projects, environments, variables, sync, teams, admin, sso
 from app.core.config import settings
 from app.core.database import init_db
 
@@ -42,6 +42,7 @@ app.include_router(variables.router, prefix="/api/variables", tags=["Variables"]
 app.include_router(sync.router, prefix="/api/sync", tags=["Sync"])
 app.include_router(teams.router, prefix="/api/teams", tags=["Teams"])
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
+app.include_router(sso.router, prefix="/api/sso", tags=["SSO"])
 
 
 @app.get("/health")
