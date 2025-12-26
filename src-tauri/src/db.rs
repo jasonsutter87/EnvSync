@@ -277,6 +277,32 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_audit_log_team ON audit_log(team_id);
             CREATE INDEX IF NOT EXISTS idx_audit_log_project ON audit_log(project_id);
             CREATE INDEX IF NOT EXISTS idx_audit_log_event_type ON audit_log(event_type);
+
+            -- Phase 5: Variable history table
+            CREATE TABLE IF NOT EXISTS variable_history (
+                id TEXT PRIMARY KEY,
+                variable_id TEXT NOT NULL,
+                environment_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                variable_key TEXT NOT NULL,
+                old_value TEXT,
+                new_value TEXT,
+                changed_by TEXT NOT NULL,
+                changed_by_id TEXT NOT NULL,
+                change_type TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                ip_address TEXT,
+                user_agent TEXT,
+                FOREIGN KEY (environment_id) REFERENCES environments(id) ON DELETE CASCADE,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_variable_history_timestamp ON variable_history(timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_variable_history_variable ON variable_history(variable_id);
+            CREATE INDEX IF NOT EXISTS idx_variable_history_environment ON variable_history(environment_id);
+            CREATE INDEX IF NOT EXISTS idx_variable_history_project ON variable_history(project_id);
+            CREATE INDEX IF NOT EXISTS idx_variable_history_changed_by ON variable_history(changed_by_id);
+            CREATE INDEX IF NOT EXISTS idx_variable_history_variable_key ON variable_history(variable_key);
             ",
         )?;
 
@@ -1656,6 +1682,259 @@ impl Database {
             ..Default::default()
         })
     }
+
+    // ========== Phase 5: Variable History Operations ==========
+
+    /// Save a variable history entry
+    pub fn save_variable_history(
+        &self,
+        variable_id: &str,
+        environment_id: &str,
+        project_id: &str,
+        variable_key: &str,
+        old_value: Option<&str>,
+        new_value: Option<&str>,
+        changed_by: &str,
+        changed_by_id: &str,
+        change_type: &str,
+        ip_address: Option<&str>,
+        user_agent: Option<&str>,
+    ) -> Result<String> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now();
+
+        conn.execute(
+            "INSERT INTO variable_history (
+                id, variable_id, environment_id, project_id, variable_key,
+                old_value, new_value, changed_by, changed_by_id, change_type,
+                timestamp, ip_address, user_agent
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                id,
+                variable_id,
+                environment_id,
+                project_id,
+                variable_key,
+                old_value,
+                new_value,
+                changed_by,
+                changed_by_id,
+                change_type,
+                now.to_rfc3339(),
+                ip_address,
+                user_agent
+            ],
+        )?;
+
+        Ok(id)
+    }
+
+    /// Get variable history with filtering and pagination
+    pub fn get_variable_history(
+        &self,
+        project_id: Option<&str>,
+        environment_id: Option<&str>,
+        variable_key: Option<&str>,
+        changed_by: Option<&str>,
+        from_date: Option<&str>,
+        to_date: Option<&str>,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> Result<(Vec<VariableHistoryEntry>, u32)> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        // Build the WHERE clause
+        let mut where_clauses = Vec::new();
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if let Some(pid) = project_id {
+            where_clauses.push("project_id = ?");
+            params_vec.push(Box::new(pid.to_string()));
+        }
+
+        if let Some(eid) = environment_id {
+            where_clauses.push("environment_id = ?");
+            params_vec.push(Box::new(eid.to_string()));
+        }
+
+        if let Some(key) = variable_key {
+            where_clauses.push("variable_key = ?");
+            params_vec.push(Box::new(key.to_string()));
+        }
+
+        if let Some(user) = changed_by {
+            where_clauses.push("changed_by = ?");
+            params_vec.push(Box::new(user.to_string()));
+        }
+
+        if let Some(from) = from_date {
+            where_clauses.push("timestamp >= ?");
+            params_vec.push(Box::new(from.to_string()));
+        }
+
+        if let Some(to) = to_date {
+            where_clauses.push("timestamp <= ?");
+            params_vec.push(Box::new(to.to_string()));
+        }
+
+        let where_clause = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_clauses.join(" AND "))
+        };
+
+        // Get total count
+        let count_sql = format!(
+            "SELECT COUNT(*) FROM variable_history {}",
+            where_clause
+        );
+
+        let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+        let total_count: u32 = conn.query_row(&count_sql, params_refs.as_slice(), |row| row.get(0))?;
+
+        // Get paginated results
+        let mut sql = format!(
+            "SELECT id, variable_id, environment_id, project_id, variable_key,
+                    old_value, new_value, changed_by, changed_by_id, change_type,
+                    timestamp, ip_address, user_agent
+             FROM variable_history
+             {}
+             ORDER BY timestamp DESC",
+            where_clause
+        );
+
+        if let Some(lim) = limit {
+            sql.push_str(&format!(" LIMIT {}", lim));
+        }
+
+        if let Some(off) = offset {
+            sql.push_str(&format!(" OFFSET {}", off));
+        }
+
+        let mut stmt = conn.prepare(&sql)?;
+
+        let entries = stmt
+            .query_map(params_refs.as_slice(), |row| {
+                Ok(VariableHistoryEntry {
+                    id: row.get(0)?,
+                    variable_id: row.get(1)?,
+                    environment_id: row.get(2)?,
+                    project_id: row.get(3)?,
+                    variable_key: row.get(4)?,
+                    old_value: row.get(5)?,
+                    new_value: row.get(6)?,
+                    changed_by: row.get(7)?,
+                    changed_by_id: row.get(8)?,
+                    change_type: row.get(9)?,
+                    timestamp: row.get(10)?,
+                    ip_address: row.get(11)?,
+                    user_agent: row.get(12)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok((entries, total_count))
+    }
+
+    /// Get history for a specific variable
+    pub fn get_variable_history_by_id(&self, variable_id: &str, limit: Option<u32>) -> Result<Vec<VariableHistoryEntry>> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        let mut sql = String::from(
+            "SELECT id, variable_id, environment_id, project_id, variable_key,
+                    old_value, new_value, changed_by, changed_by_id, change_type,
+                    timestamp, ip_address, user_agent
+             FROM variable_history
+             WHERE variable_id = ?1
+             ORDER BY timestamp DESC"
+        );
+
+        if let Some(lim) = limit {
+            sql.push_str(&format!(" LIMIT {}", lim));
+        }
+
+        let mut stmt = conn.prepare(&sql)?;
+
+        let entries = stmt
+            .query_map(params![variable_id], |row| {
+                Ok(VariableHistoryEntry {
+                    id: row.get(0)?,
+                    variable_id: row.get(1)?,
+                    environment_id: row.get(2)?,
+                    project_id: row.get(3)?,
+                    variable_key: row.get(4)?,
+                    old_value: row.get(5)?,
+                    new_value: row.get(6)?,
+                    changed_by: row.get(7)?,
+                    changed_by_id: row.get(8)?,
+                    change_type: row.get(9)?,
+                    timestamp: row.get(10)?,
+                    ip_address: row.get(11)?,
+                    user_agent: row.get(12)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(entries)
+    }
+
+    /// Get a specific history entry by ID
+    pub fn get_history_entry(&self, id: &str) -> Result<Option<VariableHistoryEntry>> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.query_row(
+            "SELECT id, variable_id, environment_id, project_id, variable_key,
+                    old_value, new_value, changed_by, changed_by_id, change_type,
+                    timestamp, ip_address, user_agent
+             FROM variable_history
+             WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(VariableHistoryEntry {
+                    id: row.get(0)?,
+                    variable_id: row.get(1)?,
+                    environment_id: row.get(2)?,
+                    project_id: row.get(3)?,
+                    variable_key: row.get(4)?,
+                    old_value: row.get(5)?,
+                    new_value: row.get(6)?,
+                    changed_by: row.get(7)?,
+                    changed_by_id: row.get(8)?,
+                    change_type: row.get(9)?,
+                    timestamp: row.get(10)?,
+                    ip_address: row.get(11)?,
+                    user_agent: row.get(12)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(EnvSyncError::from)
+    }
+}
+
+// ========== Phase 5: Variable History Model ==========
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VariableHistoryEntry {
+    pub id: String,
+    pub variable_id: String,
+    pub environment_id: String,
+    pub project_id: String,
+    pub variable_key: String,
+    pub old_value: Option<String>,
+    pub new_value: Option<String>,
+    pub changed_by: String,
+    pub changed_by_id: String,
+    pub change_type: String,
+    pub timestamp: String,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
 }
 
 // Helper trait for pipe syntax
