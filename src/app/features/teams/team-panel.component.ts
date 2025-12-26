@@ -1,4 +1,4 @@
-import { Component, inject, signal, computed } from '@angular/core';
+import { Component, inject, signal, computed, Output, EventEmitter } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { TeamService } from '../../core/services/team.service';
@@ -130,10 +130,10 @@ import { Team, TeamMember, TeamInvite, TeamRole, getAuditEventLabel } from '../.
               <h4>Shared Projects ({{ teamService.teamProjects().length }})</h4>
               <div class="project-list">
                 @for (project of teamService.teamProjects(); track project.id) {
-                  <div class="project-row">
+                  <div class="project-row clickable" (click)="onProjectClick(project.id)">
                     <span class="name">{{ project.name }}</span>
                     @if (canManageMembers(team)) {
-                      <button class="btn-icon" (click)="unshareProject(project.id, team.id)">
+                      <button class="btn-icon" (click)="unshareProject(project.id, team.id); $event.stopPropagation()">
                         &times;
                       </button>
                     }
@@ -391,6 +391,15 @@ import { Team, TeamMember, TeamInvite, TeamRole, getAuditEventLabel } from '../.
       border-radius: 4px;
     }
 
+    .project-row.clickable {
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .project-row.clickable:hover {
+      background: var(--bg-hover, #2a2a5a);
+    }
+
     .member-info {
       display: flex;
       flex-direction: column;
@@ -583,6 +592,8 @@ import { Team, TeamMember, TeamInvite, TeamRole, getAuditEventLabel } from '../.
   `]
 })
 export class TeamPanelComponent {
+  @Output() projectSelected = new EventEmitter<string>();
+
   teamService = inject(TeamService);
   syncService = inject(SyncService);
 
@@ -678,6 +689,10 @@ export class TeamPanelComponent {
     if (confirm('Remove this project from the team?')) {
       await this.teamService.unshareProject(projectId, teamId);
     }
+  }
+
+  onProjectClick(projectId: string) {
+    this.projectSelected.emit(projectId);
   }
 
   async confirmDeleteTeam(team: Team) {

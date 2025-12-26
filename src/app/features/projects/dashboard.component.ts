@@ -1,13 +1,23 @@
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { VaultStore } from '../../core/services/vault.store';
-import { getEnvTypeLabel } from '../../core/models';
+import { TeamService } from '../../core/services/team.service';
+import { getEnvTypeLabel, Project } from '../../core/models';
 import { SyncIndicatorComponent } from '../sync/sync-indicator.component';
+import { TeamPanelComponent } from '../teams/team-panel.component';
+import { ShareProjectModalComponent } from '../teams/share-project-modal.component';
+import { AuditLogViewerComponent } from '../teams/audit-log-viewer.component';
 
 @Component({
   selector: 'app-dashboard',
   standalone: true,
-  imports: [FormsModule, SyncIndicatorComponent],
+  imports: [
+    FormsModule,
+    SyncIndicatorComponent,
+    TeamPanelComponent,
+    ShareProjectModalComponent,
+    AuditLogViewerComponent,
+  ],
   template: `
     <div class="h-full flex">
       <!-- Sidebar -->
@@ -81,6 +91,36 @@ import { SyncIndicatorComponent } from '../sync/sync-indicator.component';
           } @empty {
             <p class="text-dark-500 text-sm text-center py-4">No projects yet</p>
           }
+
+          <!-- Teams Section -->
+          <div class="mt-4 pt-4 border-t border-dark-700">
+            <div class="flex items-center justify-between px-2 mb-2">
+              <span class="text-xs font-medium text-dark-400 uppercase tracking-wider">Teams</span>
+              <button
+                (click)="showTeamPanel.set(!showTeamPanel())"
+                class="p-1 rounded text-dark-400 hover:text-white hover:bg-dark-700"
+                [title]="showTeamPanel() ? 'Hide teams' : 'Show teams'"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                </svg>
+              </button>
+            </div>
+            @if (teamService.hasTeams()) {
+              @for (team of teamService.teams(); track team.id) {
+                <div class="px-3 py-2 text-dark-400 text-sm flex items-center">
+                  <svg class="w-4 h-4 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z" />
+                  </svg>
+                  <span class="truncate">{{ team.name }}</span>
+                </div>
+              }
+            } @else {
+              <p class="text-dark-500 text-xs text-center py-2">No teams yet</p>
+            }
+          </div>
         </div>
       </aside>
 
@@ -107,6 +147,31 @@ import { SyncIndicatorComponent } from '../sync/sync-indicator.component';
 
               <div class="flex items-center space-x-2">
                 <button
+                  (click)="openShareModal()"
+                  class="btn btn-secondary text-sm py-1.5"
+                  title="Share with team"
+                >
+                  <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                  Share
+                </button>
+                <button
+                  (click)="showAuditLog.set(!showAuditLog())"
+                  class="btn text-sm py-1.5"
+                  [class.btn-primary]="showAuditLog()"
+                  [class.btn-secondary]="!showAuditLog()"
+                  title="Activity log"
+                >
+                  <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Activity
+                </button>
+                <div class="w-px h-6 bg-dark-600"></div>
+                <button
                   (click)="onImport()"
                   class="btn btn-secondary text-sm py-1.5"
                 >
@@ -128,20 +193,22 @@ import { SyncIndicatorComponent } from '../sync/sync-indicator.component';
             </div>
           </div>
 
-          <!-- Variables -->
-          <div class="flex-1 overflow-y-auto p-4 bg-dark-900">
-            <!-- Add Variable -->
-            <div class="mb-4">
-              <button
-                (click)="showAddVariable.set(true)"
-                class="btn btn-primary"
-              >
-                <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                </svg>
-                Add Variable
-              </button>
-            </div>
+          <!-- Variables + Audit Log Split -->
+          <div class="flex-1 overflow-hidden flex bg-dark-900">
+            <!-- Variables Panel -->
+            <div class="flex-1 overflow-y-auto p-4" [class.w-1/2]="showAuditLog()">
+              <!-- Add Variable -->
+              <div class="mb-4">
+                <button
+                  (click)="showAddVariable.set(true)"
+                  class="btn btn-primary"
+                >
+                  <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                  </svg>
+                  Add Variable
+                </button>
+              </div>
 
             <!-- Variable List -->
             <div class="space-y-2">
@@ -227,6 +294,17 @@ import { SyncIndicatorComponent } from '../sync/sync-indicator.component';
                 </div>
               }
             </div>
+            </div>
+
+            <!-- Audit Log Panel -->
+            @if (showAuditLog()) {
+              <div class="w-1/2 border-l border-dark-700 overflow-y-auto p-4">
+                <app-audit-log-viewer
+                  [projectId]="store.selectedProjectId() ?? undefined"
+                  [projectName]="store.selectedProject()?.name"
+                />
+              </div>
+            }
           </div>
         } @else {
           <!-- No Project Selected -->
@@ -248,6 +326,22 @@ import { SyncIndicatorComponent } from '../sync/sync-indicator.component';
           </div>
         }
       </main>
+
+      <!-- Team Panel Sidebar -->
+      @if (showTeamPanel()) {
+        <aside class="w-80 border-l border-dark-700 bg-dark-800 overflow-y-auto">
+          <app-team-panel (projectSelected)="onTeamProjectSelected($event)" />
+        </aside>
+      }
+
+      <!-- Share Project Modal -->
+      @if (showShareModal()) {
+        <app-share-project-modal
+          [project]="store.selectedProject()"
+          (close)="showShareModal.set(false)"
+          (shared)="onProjectShared()"
+        />
+      }
 
       <!-- Create Project Modal -->
       @if (showCreateProject()) {
@@ -362,6 +456,7 @@ import { SyncIndicatorComponent } from '../sync/sync-indicator.component';
 })
 export class DashboardComponent {
   protected readonly store = inject(VaultStore);
+  protected readonly teamService = inject(TeamService);
 
   // Search
   protected searchQuery = '';
@@ -381,7 +476,17 @@ export class DashboardComponent {
   // Revealed variables
   protected revealedVariables = signal(new Set<string>());
 
+  // Team features
+  protected showTeamPanel = signal(false);
+  protected showShareModal = signal(false);
+  protected showAuditLog = signal(false);
+
   protected getEnvTypeLabel = getEnvTypeLabel;
+
+  constructor() {
+    // Load teams when component initializes
+    this.teamService.loadTeams();
+  }
 
   async onLock(): Promise<void> {
     await this.store.lock();
@@ -502,5 +607,22 @@ export class DashboardComponent {
       a.click();
       URL.revokeObjectURL(url);
     }
+  }
+
+  // Team feature methods
+  openShareModal(): void {
+    if (this.store.selectedProject()) {
+      this.showShareModal.set(true);
+    }
+  }
+
+  onProjectShared(): void {
+    // Refresh data after sharing
+    this.teamService.loadTeams();
+  }
+
+  onTeamProjectSelected(projectId: string): void {
+    this.store.selectProject(projectId);
+    this.showTeamPanel.set(false);
   }
 }
