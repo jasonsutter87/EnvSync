@@ -1,0 +1,45 @@
+# EnvSync Backend Dependencies
+
+# Web Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+
+# Database
+sqlalchemy[asyncio]>=2.0.25
+asyncpg>=0.29.0
+alembic>=1.13.0
+
+# Authentication & Security
+python-jose[cryptography]>=3.3.0
+passlib[argon2]>=1.7.4
+argon2-cffi>=23.1.0
+cryptography>=41.0.7
+
+# Settings
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# HTTP Client (for integrations)
+httpx>=0.26.0
+aiohttp>=3.9.0
+
+# Redis (for sessions/caching)
+redis>=5.0.0
+aioredis>=2.0.0
+
+# Utilities
+python-dateutil>=2.8.2
+orjson>=3.9.0
+
+# SSO/OIDC
+authlib>=1.3.0
+python-saml>=2.6.0
+
+# Development
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+httpx>=0.26.0  # for testing
+
+# Production
+gunicorn>=21.2.0
