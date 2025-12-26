@@ -2,11 +2,12 @@ import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { VaultStore } from '../../core/services/vault.store';
 import { getEnvTypeLabel } from '../../core/models';
+import { SyncIndicatorComponent } from '../sync/sync-indicator.component';
 
 @Component({
   selector: 'app-dashboard',
   standalone: true,
-  imports: [FormsModule],
+  imports: [FormsModule, SyncIndicatorComponent],
   template: `
     <div class="h-full flex">
       <!-- Sidebar -->
@@ -15,16 +16,19 @@ import { getEnvTypeLabel } from '../../core/models';
         <div class="p-4 border-b border-dark-700">
           <div class="flex items-center justify-between">
             <h1 class="text-lg font-semibold text-white">EnvSync</h1>
-            <button
-              (click)="onLock()"
-              class="p-1.5 rounded text-dark-400 hover:text-white hover:bg-dark-700"
-              title="Lock vault"
-            >
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-              </svg>
-            </button>
+            <div class="flex items-center space-x-1">
+              <app-sync-indicator />
+              <button
+                (click)="onLock()"
+                class="p-1.5 rounded text-dark-400 hover:text-white hover:bg-dark-700"
+                title="Lock vault"
+              >
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                </svg>
+              </button>
+            </div>
           </div>
 
           <!-- Search -->
