@@ -48,6 +48,22 @@ fn generate_nonce() -> [u8; NONCE_SIZE] {
 /// Encrypts plaintext using AES-256-GCM
 /// Returns base64-encoded ciphertext with nonce prepended
 pub fn encrypt(plaintext: &str, key: &[u8; KEY_SIZE]) -> Result<String> {
+    let (ciphertext, nonce) = encrypt_bytes(plaintext.as_bytes(), key)?;
+
+    // Prepend nonce to ciphertext
+    let mut result = nonce.to_vec();
+    result.extend(ciphertext);
+
+    Ok(BASE64.encode(&result))
+}
+
+/// Encrypts raw bytes using AES-256-GCM
+/// Returns (ciphertext, nonce) tuple for separate storage
+pub fn encrypt_bytes(plaintext: &[u8], key: &[u8]) -> Result<(Vec<u8>, [u8; NONCE_SIZE])> {
+    if key.len() != KEY_SIZE {
+        return Err(EnvSyncError::Encryption("Invalid key size".to_string()));
+    }
+
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|e| EnvSyncError::Encryption(format!("Failed to create cipher: {}", e)))?;
 
@@ -55,14 +71,10 @@ pub fn encrypt(plaintext: &str, key: &[u8; KEY_SIZE]) -> Result<String> {
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_bytes())
+        .encrypt(nonce, plaintext)
         .map_err(|e| EnvSyncError::Encryption(format!("Encryption failed: {}", e)))?;
 
-    // Prepend nonce to ciphertext
-    let mut result = nonce_bytes.to_vec();
-    result.extend(ciphertext);
-
-    Ok(BASE64.encode(&result))
+    Ok((ciphertext, nonce_bytes))
 }
 
 /// Decrypts base64-encoded ciphertext using AES-256-GCM
@@ -76,17 +88,30 @@ pub fn decrypt(encrypted: &str, key: &[u8; KEY_SIZE]) -> Result<String> {
     }
 
     let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
-    let nonce = Nonce::from_slice(nonce_bytes);
+
+    let plaintext = decrypt_bytes(ciphertext, nonce_bytes, key)?;
+
+    String::from_utf8(plaintext)
+        .map_err(|e| EnvSyncError::Decryption(format!("Invalid UTF-8: {}", e)))
+}
+
+/// Decrypts raw bytes using AES-256-GCM
+pub fn decrypt_bytes(ciphertext: &[u8], nonce: &[u8], key: &[u8]) -> Result<Vec<u8>> {
+    if key.len() != KEY_SIZE {
+        return Err(EnvSyncError::Decryption("Invalid key size".to_string()));
+    }
+    if nonce.len() != NONCE_SIZE {
+        return Err(EnvSyncError::Decryption("Invalid nonce size".to_string()));
+    }
 
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|e| EnvSyncError::Decryption(format!("Failed to create cipher: {}", e)))?;
 
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|_| EnvSyncError::InvalidPassword)?;
+    let nonce = Nonce::from_slice(nonce);
 
-    String::from_utf8(plaintext)
-        .map_err(|e| EnvSyncError::Decryption(format!("Invalid UTF-8: {}", e)))
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| EnvSyncError::InvalidPassword)
 }
 
 /// Hashes a password for storage (used for password verification)

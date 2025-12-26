@@ -38,7 +38,32 @@ pub enum EnvSyncError {
 
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
+
+    // VeilCloud sync errors
+    #[error("Not authenticated: please log in")]
+    NotAuthenticated,
+
+    #[error("Authentication token expired: please log in again")]
+    TokenExpired,
+
+    #[error("Network error: {0}")]
+    Network(String),
+
+    #[error("API error: {0}")]
+    Api(String),
+
+    #[error("Not found: {0}")]
+    NotFound(String),
+
+    #[error("Sync conflict: {0}")]
+    SyncConflict(String),
+
+    #[error("Sync error: {0}")]
+    SyncError(String),
 }
+
+// Convenience type alias for the full error type
+pub type Error = EnvSyncError;
 
 // Make the error serializable for Tauri
 impl Serialize for EnvSyncError {

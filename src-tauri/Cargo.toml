@@ -56,6 +56,12 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 thiserror = "2"
 anyhow = "1"
 
+# URL encoding for API calls
+urlencoding = "2"
+
+# Hex encoding
+hex = "0.4"
+
 [features]
 # This feature is used for production builds or when a dev server is not specified
 custom-protocol = ["tauri/custom-protocol"]

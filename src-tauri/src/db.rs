@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use crate::crypto::{decrypt, derive_key, encrypt, generate_salt, hash_password, verify_password};
 use crate::error::{EnvSyncError, Result};
-use crate::models::{Environment, EnvironmentType, Project, Variable, VaultStatus};
+use crate::models::{Environment, EnvironmentType, Project, SyncMetadata, Variable, VaultStatus};
 
 /// Auto-lock timeout in seconds (5 minutes)
 const AUTO_LOCK_TIMEOUT_SECS: i64 = 300;
@@ -144,6 +144,32 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_environments_project ON environments(project_id);
             CREATE INDEX IF NOT EXISTS idx_variables_environment ON variables(environment_id);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_variables_key ON variables(environment_id, key);
+
+            -- Sync metadata table for cloud sync
+            CREATE TABLE IF NOT EXISTS sync_metadata (
+                project_id TEXT PRIMARY KEY,
+                remote_id TEXT,
+                local_version INTEGER NOT NULL DEFAULT 1,
+                remote_version INTEGER,
+                last_synced_at TEXT,
+                is_dirty INTEGER NOT NULL DEFAULT 0,
+                sync_enabled INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+
+            -- Sync history/events table
+            CREATE TABLE IF NOT EXISTS sync_events (
+                id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                project_id TEXT,
+                environment_id TEXT,
+                variable_key TEXT,
+                details TEXT,
+                timestamp TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_sync_events_timestamp ON sync_events(timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_sync_events_project ON sync_events(project_id);
             ",
         )?;
 
@@ -709,4 +735,147 @@ impl Database {
 
         Ok(result)
     }
+
+    // ========== Sync Metadata Operations ==========
+
+    /// Get the sync encryption key (same as vault key)
+    pub fn get_sync_key(&self) -> Result<[u8; 32]> {
+        self.get_key()
+    }
+
+    /// Get sync metadata for a project
+    pub fn get_sync_metadata(&self, project_id: &str) -> Result<SyncMetadata> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.query_row(
+            "SELECT remote_id, local_version, remote_version, last_synced_at, is_dirty, sync_enabled
+             FROM sync_metadata WHERE project_id = ?1",
+            params![project_id],
+            |row| {
+                Ok(SyncMetadata {
+                    remote_id: row.get(0)?,
+                    local_version: row.get::<_, i64>(1)? as u64,
+                    remote_version: row.get::<_, Option<i64>>(2)?.map(|v| v as u64),
+                    last_synced_at: row.get::<_, Option<String>>(3)?
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+                        .map(|dt| dt.with_timezone(&chrono::Utc)),
+                    is_dirty: row.get::<_, i32>(4)? != 0,
+                    sync_enabled: row.get::<_, i32>(5)? != 0,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| {
+            // Return default metadata if not found
+            Ok::<SyncMetadata, EnvSyncError>(SyncMetadata::default())
+        })
+        .unwrap_or_else(|_| SyncMetadata::default())
+        .pipe(Ok)
+    }
+
+    /// Update sync metadata for a project
+    pub fn update_sync_metadata(
+        &self,
+        project_id: &str,
+        remote_id: Option<&str>,
+        local_version: u64,
+        remote_version: Option<u64>,
+        is_dirty: bool,
+    ) -> Result<()> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+        let now = chrono::Utc::now();
+
+        conn.execute(
+            "INSERT INTO sync_metadata (project_id, remote_id, local_version, remote_version, last_synced_at, is_dirty, sync_enabled)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)
+             ON CONFLICT(project_id) DO UPDATE SET
+                remote_id = excluded.remote_id,
+                local_version = excluded.local_version,
+                remote_version = excluded.remote_version,
+                last_synced_at = excluded.last_synced_at,
+                is_dirty = excluded.is_dirty",
+            params![
+                project_id,
+                remote_id,
+                local_version as i64,
+                remote_version.map(|v| v as i64),
+                now.to_rfc3339(),
+                is_dirty as i32
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Mark a project as dirty (has local changes)
+    pub fn mark_project_dirty(&self, project_id: &str) -> Result<()> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        // First check if sync_metadata exists for this project
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sync_metadata WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )?;
+
+        if exists {
+            conn.execute(
+                "UPDATE sync_metadata SET is_dirty = 1, local_version = local_version + 1 WHERE project_id = ?1",
+                params![project_id],
+            )?;
+        } else {
+            conn.execute(
+                "INSERT INTO sync_metadata (project_id, is_dirty, local_version, sync_enabled) VALUES (?1, 1, 1, 1)",
+                params![project_id],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Get all projects that need syncing
+    pub fn get_dirty_projects(&self) -> Result<Vec<String>> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT project_id FROM sync_metadata WHERE is_dirty = 1 AND sync_enabled = 1",
+        )?;
+
+        let ids = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<String>, _>>()?;
+
+        Ok(ids)
+    }
+
+    /// Enable or disable sync for a project
+    pub fn set_sync_enabled(&self, project_id: &str, enabled: bool) -> Result<()> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.execute(
+            "INSERT INTO sync_metadata (project_id, sync_enabled, local_version, is_dirty)
+             VALUES (?1, ?2, 1, 0)
+             ON CONFLICT(project_id) DO UPDATE SET sync_enabled = excluded.sync_enabled",
+            params![project_id, enabled as i32],
+        )?;
+
+        Ok(())
+    }
 }
+
+// Helper trait for pipe syntax
+trait Pipe: Sized {
+    fn pipe<F, R>(self, f: F) -> R
+    where
+        F: FnOnce(Self) -> R,
+    {
+        f(self)
+    }
+}
+
+impl Pipe for SyncMetadata {}

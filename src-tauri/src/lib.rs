@@ -4,6 +4,8 @@ mod db;
 mod error;
 mod models;
 mod netlify;
+mod sync;
+mod veilcloud;
 
 use std::sync::Arc;
 use tauri::Manager;
