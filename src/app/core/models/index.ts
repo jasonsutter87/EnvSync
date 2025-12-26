@@ -68,3 +68,81 @@ export interface NetlifyEnvValue {
   value: string;
   context: string;
 }
+
+// ========== Sync Types ==========
+
+export interface User {
+  id: string;
+  email: string;
+  name?: string;
+  created_at: string;
+}
+
+export interface AuthTokens {
+  access_token: string;
+  refresh_token: string;
+  expires_at: string;
+}
+
+export type SyncState =
+  | 'Disconnected'
+  | 'Idle'
+  | 'Syncing'
+  | { Error: string }
+  | 'Conflict';
+
+export interface SyncStatus {
+  state: SyncState;
+  last_sync?: string;
+  pending_changes: number;
+  user?: User;
+}
+
+export type SyncEventType =
+  | 'Push'
+  | 'Pull'
+  | 'Conflict'
+  | 'Resolved'
+  | 'Created'
+  | 'Updated'
+  | 'Deleted';
+
+export interface SyncEvent {
+  id: string;
+  event_type: SyncEventType;
+  project_id?: string;
+  environment_id?: string;
+  variable_key?: string;
+  details?: string;
+  timestamp: string;
+}
+
+export interface ConflictInfo {
+  project_id: string;
+  environment_id?: string;
+  variable_key?: string;
+  local_value: string;
+  remote_value: string;
+  local_modified: string;
+  remote_modified: string;
+}
+
+export type ConflictResolution = 'KeepLocal' | 'KeepRemote' | 'KeepBoth' | 'Merge';
+
+export interface SyncResult {
+  pushed: number;
+  pulled: number;
+  conflicts: number;
+  errors: string[];
+}
+
+export function getSyncStateLabel(state: SyncState): string {
+  if (typeof state === 'string') {
+    return state;
+  }
+  return `Error: ${state.Error}`;
+}
+
+export function isSyncError(state: SyncState): boolean {
+  return typeof state === 'object' && 'Error' in state;
+}

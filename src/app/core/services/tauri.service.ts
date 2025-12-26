@@ -8,6 +8,13 @@ import {
   SearchResult,
   NetlifySite,
   NetlifyEnvVar,
+  SyncStatus,
+  SyncEvent,
+  SyncResult,
+  User,
+  AuthTokens,
+  ConflictInfo,
+  ConflictResolution,
 } from '../models';
 
 @Injectable({
@@ -186,5 +193,70 @@ export class TauriService {
       siteId,
       environmentId,
     });
+  }
+
+  // ========== Sync Operations ==========
+
+  async getSyncStatus(): Promise<SyncStatus> {
+    return invoke<SyncStatus>('get_sync_status');
+  }
+
+  async isSyncConnected(): Promise<boolean> {
+    return invoke<boolean>('is_sync_connected');
+  }
+
+  async getSyncUser(): Promise<User | null> {
+    return invoke<User | null>('get_sync_user');
+  }
+
+  async getSyncHistory(limit: number = 50): Promise<SyncEvent[]> {
+    return invoke<SyncEvent[]>('get_sync_history', { limit });
+  }
+
+  async getSyncConflicts(): Promise<ConflictInfo[]> {
+    return invoke<ConflictInfo[]>('get_sync_conflicts');
+  }
+
+  async syncSignup(
+    email: string,
+    password: string,
+    name?: string
+  ): Promise<User> {
+    return invoke<User>('sync_signup', { email, password, name });
+  }
+
+  async syncLogin(email: string, password: string): Promise<User> {
+    return invoke<User>('sync_login', { email, password });
+  }
+
+  async syncLogout(): Promise<void> {
+    return invoke('sync_logout');
+  }
+
+  async syncRestoreSession(tokens: AuthTokens, user: User): Promise<void> {
+    return invoke('sync_restore_session', { tokens, user });
+  }
+
+  async syncGetTokens(): Promise<AuthTokens | null> {
+    return invoke<AuthTokens | null>('sync_get_tokens');
+  }
+
+  async syncNow(): Promise<SyncResult> {
+    return invoke<SyncResult>('sync_now');
+  }
+
+  async syncResolveConflict(
+    projectId: string,
+    resolution: ConflictResolution
+  ): Promise<void> {
+    return invoke('sync_resolve_conflict', { projectId, resolution });
+  }
+
+  async syncSetEnabled(projectId: string, enabled: boolean): Promise<void> {
+    return invoke('sync_set_enabled', { projectId, enabled });
+  }
+
+  async syncMarkDirty(projectId: string): Promise<void> {
+    return invoke('sync_mark_dirty', { projectId });
   }
 }
