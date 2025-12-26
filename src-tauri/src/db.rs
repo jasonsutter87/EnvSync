@@ -5,7 +5,11 @@ use std::sync::Mutex;
 
 use crate::crypto::{decrypt, derive_key, encrypt, generate_salt, hash_password, verify_password};
 use crate::error::{EnvSyncError, Result};
-use crate::models::{Environment, EnvironmentType, Project, SyncMetadata, Variable, VaultStatus};
+use crate::models::{
+    AuditEvent, AuditEventType, AuditQuery, Environment, EnvironmentType, InviteStatus,
+    KeyShare, Project, ProjectTeamAccess, SyncMetadata, Team, TeamInvite, TeamMember,
+    TeamRole, TeamWithMembers, Variable, VaultStatus,
+};
 
 /// Auto-lock timeout in seconds (5 minutes)
 const AUTO_LOCK_TIMEOUT_SECS: i64 = 300;
@@ -170,6 +174,109 @@ impl Database {
 
             CREATE INDEX IF NOT EXISTS idx_sync_events_timestamp ON sync_events(timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_sync_events_project ON sync_events(project_id);
+
+            -- Phase 3: Teams table
+            CREATE TABLE IF NOT EXISTS teams (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                owner_id TEXT NOT NULL,
+                threshold INTEGER NOT NULL DEFAULT 2,
+                total_shares INTEGER NOT NULL DEFAULT 3,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            -- Phase 3: Team members table
+            CREATE TABLE IF NOT EXISTS team_members (
+                id TEXT PRIMARY KEY,
+                team_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                email TEXT NOT NULL,
+                name TEXT,
+                role TEXT NOT NULL DEFAULT 'viewer',
+                share_index INTEGER,
+                joined_at TEXT NOT NULL,
+                invited_by TEXT NOT NULL,
+                FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+                UNIQUE(team_id, user_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id);
+            CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id);
+
+            -- Phase 3: Team invitations table
+            CREATE TABLE IF NOT EXISTS team_invites (
+                id TEXT PRIMARY KEY,
+                team_id TEXT NOT NULL,
+                email TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'viewer',
+                status TEXT NOT NULL DEFAULT 'pending',
+                invited_by TEXT NOT NULL,
+                token TEXT NOT NULL UNIQUE,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_team_invites_team ON team_invites(team_id);
+            CREATE INDEX IF NOT EXISTS idx_team_invites_email ON team_invites(email);
+            CREATE INDEX IF NOT EXISTS idx_team_invites_token ON team_invites(token);
+
+            -- Phase 3: Project team access table
+            CREATE TABLE IF NOT EXISTS project_team_access (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                team_id TEXT NOT NULL,
+                granted_at TEXT NOT NULL,
+                granted_by TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+                UNIQUE(project_id, team_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_project_team_access_project ON project_team_access(project_id);
+            CREATE INDEX IF NOT EXISTS idx_project_team_access_team ON project_team_access(team_id);
+
+            -- Phase 3: VeilKey key shares table
+            CREATE TABLE IF NOT EXISTS key_shares (
+                id TEXT PRIMARY KEY,
+                team_id TEXT NOT NULL,
+                share_index INTEGER NOT NULL,
+                encrypted_share TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+                UNIQUE(team_id, share_index)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_key_shares_team ON key_shares(team_id);
+            CREATE INDEX IF NOT EXISTS idx_key_shares_user ON key_shares(user_id);
+
+            -- Phase 3: VeilChain audit log table
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                actor_email TEXT,
+                team_id TEXT,
+                project_id TEXT,
+                environment_id TEXT,
+                variable_key TEXT,
+                target_user_id TEXT,
+                ip_address TEXT,
+                user_agent TEXT,
+                details TEXT,
+                previous_hash TEXT,
+                hash TEXT NOT NULL,
+                timestamp TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_log_team ON audit_log(team_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_log_project ON audit_log(project_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_log_event_type ON audit_log(event_type);
             ",
         )?;
 
@@ -865,6 +972,689 @@ impl Database {
         )?;
 
         Ok(())
+    }
+
+    // ========== Phase 3: Team Operations ==========
+
+    pub fn create_team(&self, team: &Team) -> Result<Team> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.execute(
+            "INSERT INTO teams (id, name, description, owner_id, threshold, total_shares, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                team.id,
+                team.name,
+                team.description,
+                team.owner_id,
+                team.threshold as i32,
+                team.total_shares as i32,
+                team.created_at.to_rfc3339(),
+                team.updated_at.to_rfc3339()
+            ],
+        )?;
+
+        Ok(team.clone())
+    }
+
+    pub fn get_team(&self, id: &str) -> Result<Team> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.query_row(
+            "SELECT id, name, description, owner_id, threshold, total_shares, created_at, updated_at
+             FROM teams WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(Team {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    owner_id: row.get(3)?,
+                    threshold: row.get::<_, i32>(4)? as u8,
+                    total_shares: row.get::<_, i32>(5)? as u8,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                    updated_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| EnvSyncError::TeamNotFound(id.to_string()))
+    }
+
+    pub fn get_teams_for_user(&self, user_id: &str) -> Result<Vec<Team>> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT t.id, t.name, t.description, t.owner_id, t.threshold, t.total_shares, t.created_at, t.updated_at
+             FROM teams t
+             LEFT JOIN team_members tm ON t.id = tm.team_id
+             WHERE t.owner_id = ?1 OR tm.user_id = ?1
+             ORDER BY t.name",
+        )?;
+
+        let teams = stmt
+            .query_map(params![user_id], |row| {
+                Ok(Team {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    owner_id: row.get(3)?,
+                    threshold: row.get::<_, i32>(4)? as u8,
+                    total_shares: row.get::<_, i32>(5)? as u8,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                    updated_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(teams)
+    }
+
+    pub fn update_team(&self, id: &str, name: &str, description: Option<&str>) -> Result<Team> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+        let now = chrono::Utc::now();
+
+        conn.execute(
+            "UPDATE teams SET name = ?1, description = ?2, updated_at = ?3 WHERE id = ?4",
+            params![name, description, now.to_rfc3339(), id],
+        )?;
+
+        drop(guard);
+        self.get_team(id)
+    }
+
+    pub fn delete_team(&self, id: &str) -> Result<()> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.execute("DELETE FROM teams WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn get_team_with_members(&self, team_id: &str) -> Result<TeamWithMembers> {
+        let team = self.get_team(team_id)?;
+        let members = self.get_team_members(team_id)?;
+        let pending_invites = self.get_team_pending_invites(team_id)?;
+
+        Ok(TeamWithMembers {
+            team,
+            members,
+            pending_invites,
+        })
+    }
+
+    // ========== Team Member Operations ==========
+
+    pub fn add_team_member(&self, member: &TeamMember) -> Result<TeamMember> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.execute(
+            "INSERT INTO team_members (id, team_id, user_id, email, name, role, share_index, joined_at, invited_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                member.id,
+                member.team_id,
+                member.user_id,
+                member.email,
+                member.name,
+                member.role.as_str(),
+                member.share_index.map(|i| i as i32),
+                member.joined_at.to_rfc3339(),
+                member.invited_by
+            ],
+        )?;
+
+        Ok(member.clone())
+    }
+
+    pub fn get_team_members(&self, team_id: &str) -> Result<Vec<TeamMember>> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, team_id, user_id, email, name, role, share_index, joined_at, invited_by
+             FROM team_members WHERE team_id = ?1 ORDER BY joined_at",
+        )?;
+
+        let members = stmt
+            .query_map(params![team_id], |row| {
+                Ok(TeamMember {
+                    id: row.get(0)?,
+                    team_id: row.get(1)?,
+                    user_id: row.get(2)?,
+                    email: row.get(3)?,
+                    name: row.get(4)?,
+                    role: TeamRole::from_str(&row.get::<_, String>(5)?),
+                    share_index: row.get::<_, Option<i32>>(6)?.map(|i| i as u8),
+                    joined_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                    invited_by: row.get(8)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(members)
+    }
+
+    pub fn get_team_member(&self, team_id: &str, user_id: &str) -> Result<Option<TeamMember>> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.query_row(
+            "SELECT id, team_id, user_id, email, name, role, share_index, joined_at, invited_by
+             FROM team_members WHERE team_id = ?1 AND user_id = ?2",
+            params![team_id, user_id],
+            |row| {
+                Ok(TeamMember {
+                    id: row.get(0)?,
+                    team_id: row.get(1)?,
+                    user_id: row.get(2)?,
+                    email: row.get(3)?,
+                    name: row.get(4)?,
+                    role: TeamRole::from_str(&row.get::<_, String>(5)?),
+                    share_index: row.get::<_, Option<i32>>(6)?.map(|i| i as u8),
+                    joined_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                    invited_by: row.get(8)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(EnvSyncError::from)
+    }
+
+    pub fn update_member_role(&self, team_id: &str, user_id: &str, role: TeamRole) -> Result<()> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.execute(
+            "UPDATE team_members SET role = ?1 WHERE team_id = ?2 AND user_id = ?3",
+            params![role.as_str(), team_id, user_id],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn remove_team_member(&self, team_id: &str, user_id: &str) -> Result<()> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.execute(
+            "DELETE FROM team_members WHERE team_id = ?1 AND user_id = ?2",
+            params![team_id, user_id],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn update_member_share_index(&self, team_id: &str, user_id: &str, share_index: u8) -> Result<()> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.execute(
+            "UPDATE team_members SET share_index = ?1 WHERE team_id = ?2 AND user_id = ?3",
+            params![share_index as i32, team_id, user_id],
+        )?;
+
+        Ok(())
+    }
+
+    // ========== Team Invite Operations ==========
+
+    pub fn create_invite(&self, invite: &TeamInvite) -> Result<TeamInvite> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.execute(
+            "INSERT INTO team_invites (id, team_id, email, role, status, invited_by, token, expires_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                invite.id,
+                invite.team_id,
+                invite.email,
+                invite.role.as_str(),
+                invite.status.as_str(),
+                invite.invited_by,
+                invite.token,
+                invite.expires_at.to_rfc3339(),
+                invite.created_at.to_rfc3339()
+            ],
+        )?;
+
+        Ok(invite.clone())
+    }
+
+    pub fn get_invite_by_token(&self, token: &str) -> Result<Option<TeamInvite>> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.query_row(
+            "SELECT id, team_id, email, role, status, invited_by, token, expires_at, created_at
+             FROM team_invites WHERE token = ?1",
+            params![token],
+            |row| {
+                Ok(TeamInvite {
+                    id: row.get(0)?,
+                    team_id: row.get(1)?,
+                    email: row.get(2)?,
+                    role: TeamRole::from_str(&row.get::<_, String>(3)?),
+                    status: InviteStatus::from_str(&row.get::<_, String>(4)?),
+                    invited_by: row.get(5)?,
+                    token: row.get(6)?,
+                    expires_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(8)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                })
+            },
+        )
+        .optional()
+        .map_err(EnvSyncError::from)
+    }
+
+    pub fn get_team_pending_invites(&self, team_id: &str) -> Result<Vec<TeamInvite>> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, team_id, email, role, status, invited_by, token, expires_at, created_at
+             FROM team_invites WHERE team_id = ?1 AND status = 'pending' ORDER BY created_at DESC",
+        )?;
+
+        let invites = stmt
+            .query_map(params![team_id], |row| {
+                Ok(TeamInvite {
+                    id: row.get(0)?,
+                    team_id: row.get(1)?,
+                    email: row.get(2)?,
+                    role: TeamRole::from_str(&row.get::<_, String>(3)?),
+                    status: InviteStatus::from_str(&row.get::<_, String>(4)?),
+                    invited_by: row.get(5)?,
+                    token: row.get(6)?,
+                    expires_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(8)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(invites)
+    }
+
+    pub fn update_invite_status(&self, id: &str, status: InviteStatus) -> Result<()> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.execute(
+            "UPDATE team_invites SET status = ?1 WHERE id = ?2",
+            params![status.as_str(), id],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn revoke_invite(&self, id: &str) -> Result<()> {
+        self.update_invite_status(id, InviteStatus::Revoked)
+    }
+
+    // ========== Project Team Access Operations ==========
+
+    pub fn share_project_with_team(&self, access: &ProjectTeamAccess) -> Result<ProjectTeamAccess> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.execute(
+            "INSERT INTO project_team_access (id, project_id, team_id, granted_at, granted_by)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                access.id,
+                access.project_id,
+                access.team_id,
+                access.granted_at.to_rfc3339(),
+                access.granted_by
+            ],
+        )?;
+
+        Ok(access.clone())
+    }
+
+    pub fn unshare_project_from_team(&self, project_id: &str, team_id: &str) -> Result<()> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.execute(
+            "DELETE FROM project_team_access WHERE project_id = ?1 AND team_id = ?2",
+            params![project_id, team_id],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn get_project_teams(&self, project_id: &str) -> Result<Vec<Team>> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT t.id, t.name, t.description, t.owner_id, t.threshold, t.total_shares, t.created_at, t.updated_at
+             FROM teams t
+             INNER JOIN project_team_access pta ON t.id = pta.team_id
+             WHERE pta.project_id = ?1
+             ORDER BY t.name",
+        )?;
+
+        let teams = stmt
+            .query_map(params![project_id], |row| {
+                Ok(Team {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    owner_id: row.get(3)?,
+                    threshold: row.get::<_, i32>(4)? as u8,
+                    total_shares: row.get::<_, i32>(5)? as u8,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                    updated_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(teams)
+    }
+
+    pub fn get_team_projects(&self, team_id: &str) -> Result<Vec<Project>> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT p.id, p.name, p.description, p.created_at, p.updated_at
+             FROM projects p
+             INNER JOIN project_team_access pta ON p.id = pta.project_id
+             WHERE pta.team_id = ?1
+             ORDER BY p.name",
+        )?;
+
+        let projects = stmt
+            .query_map(params![team_id], |row| {
+                Ok(Project {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(3)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                    updated_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(projects)
+    }
+
+    pub fn user_can_access_project(&self, user_id: &str, project_id: &str) -> Result<Option<TeamRole>> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        // Check if user is owner or member of any team with access to this project
+        let role: Option<String> = conn.query_row(
+            "SELECT tm.role
+             FROM team_members tm
+             INNER JOIN project_team_access pta ON tm.team_id = pta.team_id
+             WHERE tm.user_id = ?1 AND pta.project_id = ?2
+             UNION
+             SELECT 'admin' as role
+             FROM teams t
+             INNER JOIN project_team_access pta ON t.id = pta.team_id
+             WHERE t.owner_id = ?1 AND pta.project_id = ?2
+             ORDER BY CASE role WHEN 'admin' THEN 1 WHEN 'member' THEN 2 ELSE 3 END
+             LIMIT 1",
+            params![user_id, project_id],
+            |row| row.get(0),
+        ).optional()?;
+
+        Ok(role.map(|r| TeamRole::from_str(&r)))
+    }
+
+    // ========== VeilKey Key Share Operations ==========
+
+    pub fn store_key_share(&self, share: &KeyShare) -> Result<KeyShare> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.execute(
+            "INSERT INTO key_shares (id, team_id, share_index, encrypted_share, user_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(team_id, share_index) DO UPDATE SET
+                encrypted_share = excluded.encrypted_share,
+                user_id = excluded.user_id",
+            params![
+                share.id,
+                share.team_id,
+                share.share_index as i32,
+                share.encrypted_share,
+                share.user_id,
+                share.created_at.to_rfc3339()
+            ],
+        )?;
+
+        Ok(share.clone())
+    }
+
+    pub fn get_team_key_shares(&self, team_id: &str) -> Result<Vec<KeyShare>> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, team_id, share_index, encrypted_share, user_id, created_at
+             FROM key_shares WHERE team_id = ?1 ORDER BY share_index",
+        )?;
+
+        let shares = stmt
+            .query_map(params![team_id], |row| {
+                Ok(KeyShare {
+                    id: row.get(0)?,
+                    team_id: row.get(1)?,
+                    share_index: row.get::<_, i32>(2)? as u8,
+                    encrypted_share: row.get(3)?,
+                    user_id: row.get(4)?,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(shares)
+    }
+
+    pub fn get_user_key_share(&self, team_id: &str, user_id: &str) -> Result<Option<KeyShare>> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.query_row(
+            "SELECT id, team_id, share_index, encrypted_share, user_id, created_at
+             FROM key_shares WHERE team_id = ?1 AND user_id = ?2",
+            params![team_id, user_id],
+            |row| {
+                Ok(KeyShare {
+                    id: row.get(0)?,
+                    team_id: row.get(1)?,
+                    share_index: row.get::<_, i32>(2)? as u8,
+                    encrypted_share: row.get(3)?,
+                    user_id: row.get(4)?,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                })
+            },
+        )
+        .optional()
+        .map_err(EnvSyncError::from)
+    }
+
+    // ========== VeilChain Audit Log Operations ==========
+
+    pub fn log_audit_event(&self, event: &AuditEvent) -> Result<()> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.execute(
+            "INSERT INTO audit_log (id, event_type, actor_id, actor_email, team_id, project_id,
+             environment_id, variable_key, target_user_id, ip_address, user_agent, details,
+             previous_hash, hash, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                event.id,
+                event.event_type.as_str(),
+                event.actor_id,
+                event.actor_email,
+                event.team_id,
+                event.project_id,
+                event.environment_id,
+                event.variable_key,
+                event.target_user_id,
+                event.ip_address,
+                event.user_agent,
+                event.details,
+                event.previous_hash,
+                event.hash,
+                event.timestamp.to_rfc3339()
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn get_latest_audit_hash(&self) -> Result<Option<String>> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        conn.query_row(
+            "SELECT hash FROM audit_log ORDER BY timestamp DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(EnvSyncError::from)
+    }
+
+    pub fn query_audit_log(&self, query: &AuditQuery) -> Result<Vec<AuditEvent>> {
+        let guard = self.get_conn()?;
+        let conn = guard.as_ref().unwrap();
+
+        let mut sql = String::from(
+            "SELECT id, event_type, actor_id, actor_email, team_id, project_id,
+             environment_id, variable_key, target_user_id, ip_address, user_agent,
+             details, previous_hash, hash, timestamp
+             FROM audit_log WHERE 1=1"
+        );
+
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if let Some(ref actor_id) = query.actor_id {
+            sql.push_str(" AND actor_id = ?");
+            params_vec.push(Box::new(actor_id.clone()));
+        }
+
+        if let Some(ref team_id) = query.team_id {
+            sql.push_str(" AND team_id = ?");
+            params_vec.push(Box::new(team_id.clone()));
+        }
+
+        if let Some(ref project_id) = query.project_id {
+            sql.push_str(" AND project_id = ?");
+            params_vec.push(Box::new(project_id.clone()));
+        }
+
+        if let Some(ref from_date) = query.from_date {
+            sql.push_str(" AND timestamp >= ?");
+            params_vec.push(Box::new(from_date.to_rfc3339()));
+        }
+
+        if let Some(ref to_date) = query.to_date {
+            sql.push_str(" AND timestamp <= ?");
+            params_vec.push(Box::new(to_date.to_rfc3339()));
+        }
+
+        sql.push_str(" ORDER BY timestamp DESC");
+
+        if let Some(limit) = query.limit {
+            sql.push_str(&format!(" LIMIT {}", limit));
+        }
+
+        if let Some(offset) = query.offset {
+            sql.push_str(&format!(" OFFSET {}", offset));
+        }
+
+        let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+
+        let mut stmt = conn.prepare(&sql)?;
+
+        let events = stmt
+            .query_map(params_refs.as_slice(), |row| {
+                Ok(AuditEvent {
+                    id: row.get(0)?,
+                    event_type: AuditEventType::from_str(&row.get::<_, String>(1)?),
+                    actor_id: row.get(2)?,
+                    actor_email: row.get(3)?,
+                    team_id: row.get(4)?,
+                    project_id: row.get(5)?,
+                    environment_id: row.get(6)?,
+                    variable_key: row.get(7)?,
+                    target_user_id: row.get(8)?,
+                    ip_address: row.get(9)?,
+                    user_agent: row.get(10)?,
+                    details: row.get(11)?,
+                    previous_hash: row.get(12)?,
+                    hash: row.get(13)?,
+                    timestamp: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(14)?)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(events)
+    }
+
+    pub fn get_project_audit_log(&self, project_id: &str, limit: Option<u32>) -> Result<Vec<AuditEvent>> {
+        self.query_audit_log(&AuditQuery {
+            project_id: Some(project_id.to_string()),
+            limit,
+            ..Default::default()
+        })
+    }
+
+    pub fn get_team_audit_log(&self, team_id: &str, limit: Option<u32>) -> Result<Vec<AuditEvent>> {
+        self.query_audit_log(&AuditQuery {
+            team_id: Some(team_id.to_string()),
+            limit,
+            ..Default::default()
+        })
     }
 }
 

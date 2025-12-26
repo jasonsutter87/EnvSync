@@ -60,6 +60,28 @@ pub enum EnvSyncError {
 
     #[error("Sync error: {0}")]
     SyncError(String),
+
+    // Phase 3: Team errors
+    #[error("Team not found: {0}")]
+    TeamNotFound(String),
+
+    #[error("Team member not found: {0}")]
+    MemberNotFound(String),
+
+    #[error("Invite not found or expired: {0}")]
+    InviteNotFound(String),
+
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
+
+    #[error("Invalid threshold parameters: {0}")]
+    InvalidThreshold(String),
+
+    #[error("Insufficient key shares: need {0}, have {1}")]
+    InsufficientShares(u8, u8),
+
+    #[error("Key reconstruction failed: {0}")]
+    KeyReconstructionFailed(String),
 }
 
 // Convenience type alias for the full error type
