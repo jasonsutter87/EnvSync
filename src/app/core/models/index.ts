@@ -48,3 +48,23 @@ export function getEnvTypeClass(envType: Environment['env_type']): string {
   const type = typeof envType === 'string' ? envType.toLowerCase() : 'custom';
   return `env-${type}`;
 }
+
+// Netlify types
+export interface NetlifySite {
+  id: string;
+  name: string;
+  url: string;
+  account_slug: string;
+  admin_url: string;
+}
+
+export interface NetlifyEnvVar {
+  key: string;
+  scopes: string[];
+  values: NetlifyEnvValue[];
+}
+
+export interface NetlifyEnvValue {
+  value: string;
+  context: string;
+}

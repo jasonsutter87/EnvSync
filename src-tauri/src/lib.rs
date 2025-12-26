@@ -3,6 +3,7 @@ mod crypto;
 mod db;
 mod error;
 mod models;
+mod netlify;
 
 use std::sync::Arc;
 use tauri::Manager;
@@ -72,6 +73,11 @@ pub fn run() {
             // Import/Export commands
             commands::export_env_file,
             commands::import_env_file,
+            // Netlify commands
+            commands::netlify_list_sites,
+            commands::netlify_get_env_vars,
+            commands::netlify_push_env_vars,
+            commands::netlify_pull_env_vars,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -6,6 +6,8 @@ import {
   Variable,
   VaultStatus,
   SearchResult,
+  NetlifySite,
+  NetlifyEnvVar,
 } from '../models';
 
 @Injectable({
@@ -144,5 +146,45 @@ export class TauriService {
     content: string
   ): Promise<Variable[]> {
     return invoke<Variable[]>('import_env_file', { environmentId, content });
+  }
+
+  // ========== Netlify Operations ==========
+
+  async netlifyListSites(accessToken: string): Promise<NetlifySite[]> {
+    return invoke<NetlifySite[]>('netlify_list_sites', { accessToken });
+  }
+
+  async netlifyGetEnvVars(
+    accessToken: string,
+    siteId: string
+  ): Promise<NetlifyEnvVar[]> {
+    return invoke<NetlifyEnvVar[]>('netlify_get_env_vars', {
+      accessToken,
+      siteId,
+    });
+  }
+
+  async netlifyPushEnvVars(
+    accessToken: string,
+    siteId: string,
+    environmentId: string
+  ): Promise<void> {
+    return invoke('netlify_push_env_vars', {
+      accessToken,
+      siteId,
+      environmentId,
+    });
+  }
+
+  async netlifyPullEnvVars(
+    accessToken: string,
+    siteId: string,
+    environmentId: string
+  ): Promise<Variable[]> {
+    return invoke<Variable[]>('netlify_pull_env_vars', {
+      accessToken,
+      siteId,
+      environmentId,
+    });
   }
 }

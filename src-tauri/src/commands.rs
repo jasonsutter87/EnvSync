@@ -226,3 +226,67 @@ pub fn import_env_file(
 
     Ok(variables)
 }
+
+// ========== Netlify Commands ==========
+
+use crate::netlify::{NetlifyClient, NetlifyEnvVar, NetlifySite};
+
+#[tauri::command]
+pub async fn netlify_list_sites(access_token: String) -> Result<Vec<NetlifySite>> {
+    let client = NetlifyClient::new(access_token);
+    client.list_sites().await
+}
+
+#[tauri::command]
+pub async fn netlify_get_env_vars(
+    access_token: String,
+    site_id: String,
+) -> Result<Vec<NetlifyEnvVar>> {
+    let client = NetlifyClient::new(access_token);
+    client.get_env_vars(&site_id).await
+}
+
+#[tauri::command]
+pub async fn netlify_push_env_vars(
+    access_token: String,
+    site_id: String,
+    db: State<'_, DbState>,
+    environment_id: String,
+) -> Result<()> {
+    let variables = db.get_variables(&environment_id)?;
+    let var_tuples: Vec<(String, String)> = variables
+        .into_iter()
+        .map(|v| (v.key, v.value))
+        .collect();
+
+    let client = NetlifyClient::new(access_token);
+    client.push_variables(&site_id, &var_tuples, "all").await
+}
+
+#[tauri::command]
+pub async fn netlify_pull_env_vars(
+    access_token: String,
+    site_id: String,
+    db: State<'_, DbState>,
+    environment_id: String,
+) -> Result<Vec<Variable>> {
+    let client = NetlifyClient::new(access_token);
+    let netlify_vars = client.get_env_vars(&site_id).await?;
+
+    let mut imported = Vec::new();
+    for var in netlify_vars {
+        // Get the value for "all" context, or the first available value
+        let value = var
+            .values
+            .iter()
+            .find(|v| v.context == "all")
+            .or_else(|| var.values.first())
+            .map(|v| v.value.clone())
+            .unwrap_or_default();
+
+        let created = db.create_variable(&environment_id, &var.key, &value, true)?;
+        imported.push(created);
+    }
+
+    Ok(imported)
+}
