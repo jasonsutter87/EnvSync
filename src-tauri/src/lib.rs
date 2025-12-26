@@ -2,7 +2,7 @@ mod audit;
 mod commands;
 mod crypto;
 mod db;
-mod error;
+pub mod error;
 mod models;
 mod netlify;
 mod railway;
