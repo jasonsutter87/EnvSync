@@ -381,3 +381,169 @@ pub fn sync_set_enabled(db: State<DbState>, project_id: String, enabled: bool) -
 pub fn sync_mark_dirty(db: State<DbState>, project_id: String) -> Result<()> {
     db.mark_project_dirty(&project_id)
 }
+
+// ========== Vercel Commands ==========
+
+use crate::vercel::{VercelClient, VercelEnvVar, VercelProject};
+
+#[tauri::command]
+pub async fn vercel_list_projects(
+    access_token: String,
+    team_id: Option<String>,
+) -> Result<Vec<VercelProject>> {
+    let client = VercelClient::new(access_token, team_id);
+    client.list_projects().await
+}
+
+#[tauri::command]
+pub async fn vercel_get_env_vars(
+    access_token: String,
+    team_id: Option<String>,
+    project_id: String,
+) -> Result<Vec<VercelEnvVar>> {
+    let client = VercelClient::new(access_token, team_id);
+    client.get_env_vars(&project_id).await
+}
+
+#[tauri::command]
+pub async fn vercel_push_env_vars(
+    db: State<'_, DbState>,
+    access_token: String,
+    team_id: Option<String>,
+    vercel_project_id: String,
+    environment_id: String,
+    targets: Vec<String>,
+) -> Result<()> {
+    let client = VercelClient::new(access_token, team_id);
+    let variables = db.get_variables(&environment_id)?;
+
+    let vars: Vec<(String, String, bool)> = variables
+        .into_iter()
+        .map(|v| (v.key, v.value, v.is_secret))
+        .collect();
+
+    let target_refs: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
+    client
+        .push_variables(&vercel_project_id, &vars, &target_refs)
+        .await
+}
+
+#[tauri::command]
+pub async fn vercel_pull_env_vars(
+    db: State<'_, DbState>,
+    access_token: String,
+    team_id: Option<String>,
+    vercel_project_id: String,
+    environment_id: String,
+) -> Result<Vec<Variable>> {
+    let client = VercelClient::new(access_token, team_id);
+    let vercel_vars = client.get_env_vars(&vercel_project_id).await?;
+
+    let mut imported = Vec::new();
+    for var in vercel_vars {
+        let created = db.create_variable(
+            &environment_id,
+            &var.key,
+            &var.value,
+            var.env_type == "secret",
+        )?;
+        imported.push(created);
+    }
+
+    Ok(imported)
+}
+
+// ========== Railway Commands ==========
+
+use crate::railway::{RailwayClient, RailwayEnvironment, RailwayProject, RailwayService};
+
+#[tauri::command]
+pub async fn railway_list_projects(access_token: String) -> Result<Vec<RailwayProject>> {
+    let client = RailwayClient::new(access_token);
+    client.list_projects().await
+}
+
+#[tauri::command]
+pub async fn railway_get_services(
+    access_token: String,
+    project_id: String,
+) -> Result<Vec<RailwayService>> {
+    let client = RailwayClient::new(access_token);
+    client.get_services(&project_id).await
+}
+
+#[tauri::command]
+pub async fn railway_get_environments(
+    access_token: String,
+    project_id: String,
+) -> Result<Vec<RailwayEnvironment>> {
+    let client = RailwayClient::new(access_token);
+    client.get_environments(&project_id).await
+}
+
+#[tauri::command]
+pub async fn railway_get_variables(
+    access_token: String,
+    project_id: String,
+    environment_id: String,
+    service_id: String,
+) -> Result<std::collections::HashMap<String, String>> {
+    let client = RailwayClient::new(access_token);
+    client
+        .get_variables(&project_id, &environment_id, &service_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn railway_push_env_vars(
+    db: State<'_, DbState>,
+    access_token: String,
+    railway_project_id: String,
+    railway_environment_id: String,
+    railway_service_id: String,
+    environment_id: String,
+) -> Result<()> {
+    let client = RailwayClient::new(access_token);
+    let variables = db.get_variables(&environment_id)?;
+
+    let vars: Vec<(String, String)> = variables
+        .into_iter()
+        .map(|v| (v.key, v.value))
+        .collect();
+
+    client
+        .push_variables(
+            &railway_project_id,
+            &railway_environment_id,
+            &railway_service_id,
+            &vars,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn railway_pull_env_vars(
+    db: State<'_, DbState>,
+    access_token: String,
+    railway_project_id: String,
+    railway_environment_id: String,
+    railway_service_id: String,
+    environment_id: String,
+) -> Result<Vec<Variable>> {
+    let client = RailwayClient::new(access_token);
+    let railway_vars = client
+        .get_variables(
+            &railway_project_id,
+            &railway_environment_id,
+            &railway_service_id,
+        )
+        .await?;
+
+    let mut imported = Vec::new();
+    for (key, value) in railway_vars {
+        let created = db.create_variable(&environment_id, &key, &value, true)?;
+        imported.push(created);
+    }
+
+    Ok(imported)
+}

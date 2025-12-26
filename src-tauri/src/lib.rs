@@ -4,8 +4,10 @@ mod db;
 mod error;
 mod models;
 mod netlify;
+mod railway;
 mod sync;
 mod veilcloud;
+mod vercel;
 
 use std::sync::Arc;
 use tauri::Manager;
@@ -100,6 +102,18 @@ pub fn run() {
             commands::sync_resolve_conflict,
             commands::sync_set_enabled,
             commands::sync_mark_dirty,
+            // Vercel commands
+            commands::vercel_list_projects,
+            commands::vercel_get_env_vars,
+            commands::vercel_push_env_vars,
+            commands::vercel_pull_env_vars,
+            // Railway commands
+            commands::railway_list_projects,
+            commands::railway_get_services,
+            commands::railway_get_environments,
+            commands::railway_get_variables,
+            commands::railway_push_env_vars,
+            commands::railway_pull_env_vars,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
