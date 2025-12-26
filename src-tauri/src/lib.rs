@@ -1,8 +1,10 @@
 mod audit;
+pub mod aws;
 mod commands;
 pub mod crypto;
 mod db;
 pub mod error;
+pub mod github;
 pub mod models;
 mod netlify;
 mod railway;

@@ -68,6 +68,13 @@ md5 = "0.7"
 # Threshold cryptography (Shamir's Secret Sharing)
 sharks = "0.5"
 
+# Libsodium for GitHub Actions secrets encryption
+sodiumoxide = "0.2"
+
+# AWS SDK for Parameter Store
+aws-config = { version = "1.5", features = ["behavior-version-latest"] }
+aws-sdk-ssm = "1.54"
+
 [features]
 # This feature is used for production builds or when a dev server is not specified
 custom-protocol = ["tauri/custom-protocol"]
