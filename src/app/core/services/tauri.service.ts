@@ -15,6 +15,15 @@ import {
   AuthTokens,
   ConflictInfo,
   ConflictResolution,
+  Team,
+  TeamMember,
+  TeamInvite,
+  TeamWithMembers,
+  TeamRole,
+  ProjectTeamAccess,
+  KeyShare,
+  AuditEvent,
+  AuditQuery,
 } from '../models';
 
 @Injectable({
@@ -258,5 +267,112 @@ export class TauriService {
 
   async syncMarkDirty(projectId: string): Promise<void> {
     return invoke('sync_mark_dirty', { projectId });
+  }
+
+  // ========== Phase 3: Team Operations ==========
+
+  async createTeam(
+    name: string,
+    description?: string,
+    threshold?: number,
+    totalShares?: number
+  ): Promise<Team> {
+    return invoke<Team>('create_team', { name, description, threshold, totalShares });
+  }
+
+  async getTeam(id: string): Promise<Team> {
+    return invoke<Team>('get_team', { id });
+  }
+
+  async getTeams(): Promise<Team[]> {
+    return invoke<Team[]>('get_teams');
+  }
+
+  async getTeamWithMembers(teamId: string): Promise<TeamWithMembers> {
+    return invoke<TeamWithMembers>('get_team_with_members', { teamId });
+  }
+
+  async updateTeam(id: string, name: string, description?: string): Promise<Team> {
+    return invoke<Team>('update_team', { id, name, description });
+  }
+
+  async deleteTeam(id: string): Promise<void> {
+    return invoke('delete_team', { id });
+  }
+
+  // ========== Team Member Operations ==========
+
+  async inviteTeamMember(teamId: string, email: string, role: TeamRole): Promise<TeamInvite> {
+    return invoke<TeamInvite>('invite_team_member', { teamId, email, role: role.toString() });
+  }
+
+  async acceptTeamInvite(token: string): Promise<TeamMember> {
+    return invoke<TeamMember>('accept_team_invite', { token });
+  }
+
+  async getTeamMembers(teamId: string): Promise<TeamMember[]> {
+    return invoke<TeamMember[]>('get_team_members', { teamId });
+  }
+
+  async updateMemberRole(teamId: string, userId: string, newRole: TeamRole): Promise<void> {
+    return invoke('update_member_role', { teamId, userId, newRole: newRole.toString() });
+  }
+
+  async removeTeamMember(teamId: string, userId: string): Promise<void> {
+    return invoke('remove_team_member', { teamId, userId });
+  }
+
+  async revokeTeamInvite(inviteId: string): Promise<void> {
+    return invoke('revoke_team_invite', { inviteId });
+  }
+
+  // ========== Project Sharing Operations ==========
+
+  async shareProjectWithTeam(projectId: string, teamId: string): Promise<ProjectTeamAccess> {
+    return invoke<ProjectTeamAccess>('share_project_with_team', { projectId, teamId });
+  }
+
+  async unshareProjectFromTeam(projectId: string, teamId: string): Promise<void> {
+    return invoke('unshare_project_from_team', { projectId, teamId });
+  }
+
+  async getProjectTeams(projectId: string): Promise<Team[]> {
+    return invoke<Team[]>('get_project_teams', { projectId });
+  }
+
+  async getTeamProjects(teamId: string): Promise<Project[]> {
+    return invoke<Project[]>('get_team_projects', { teamId });
+  }
+
+  async checkProjectAccess(projectId: string): Promise<string | null> {
+    return invoke<string | null>('check_project_access', { projectId });
+  }
+
+  // ========== VeilKey Operations ==========
+
+  async generateTeamKey(teamId: string): Promise<void> {
+    return invoke('generate_team_key', { teamId });
+  }
+
+  async getTeamKeyShares(teamId: string): Promise<KeyShare[]> {
+    return invoke<KeyShare[]>('get_team_key_shares', { teamId });
+  }
+
+  async getMyKeyShare(teamId: string): Promise<KeyShare | null> {
+    return invoke<KeyShare | null>('get_my_key_share', { teamId });
+  }
+
+  // ========== Audit Log Operations ==========
+
+  async getProjectAuditLog(projectId: string, limit?: number): Promise<AuditEvent[]> {
+    return invoke<AuditEvent[]>('get_project_audit_log', { projectId, limit });
+  }
+
+  async getTeamAuditLog(teamId: string, limit?: number): Promise<AuditEvent[]> {
+    return invoke<AuditEvent[]>('get_team_audit_log', { teamId, limit });
+  }
+
+  async queryAuditLog(query: AuditQuery): Promise<AuditEvent[]> {
+    return invoke<AuditEvent[]>('query_audit_log', { query });
   }
 }
