@@ -331,3 +331,64 @@ export function getAuditEventIcon(eventType: AuditEventType): string {
   if (eventType.startsWith('Key')) return 'shield';
   return 'activity';
 }
+
+// ========== Phase 5: Variable History Types ==========
+
+export type VariableChangeType = 'Create' | 'Update' | 'Delete' | 'Restore';
+
+export interface VariableHistory {
+  id: string;
+  variable_id: string;
+  environment_id: string;
+  project_id: string;
+  variable_key: string;
+  old_value: string | null;
+  new_value: string | null;
+  changed_by: string;
+  changed_by_id: string;
+  change_type: VariableChangeType;
+  timestamp: string;
+  ip_address?: string;
+  user_agent?: string;
+}
+
+export interface HistoryQuery {
+  project_id?: string;
+  environment_id?: string;
+  variable_key?: string;
+  changed_by?: string;
+  from_date?: string;
+  to_date?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface HistoryExportOptions {
+  format: 'csv' | 'json';
+  project_id?: string;
+  environment_id?: string;
+  variable_key?: string;
+  changed_by?: string;
+  from_date?: string;
+  to_date?: string;
+}
+
+export function getChangeTypeLabel(changeType: VariableChangeType): string {
+  const labels: Record<VariableChangeType, string> = {
+    Create: 'Created',
+    Update: 'Updated',
+    Delete: 'Deleted',
+    Restore: 'Restored'
+  };
+  return labels[changeType];
+}
+
+export function getChangeTypeIcon(changeType: VariableChangeType): string {
+  const icons: Record<VariableChangeType, string> = {
+    Create: 'plus-circle',
+    Update: 'edit',
+    Delete: 'trash-2',
+    Restore: 'rotate-ccw'
+  };
+  return icons[changeType];
+}
