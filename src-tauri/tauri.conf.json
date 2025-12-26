@@ -1,0 +1,45 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "EnvSync",
+  "version": "0.1.0",
+  "identifier": "com.envsync.app",
+  "build": {
+    "frontendDist": "../dist/envsync-app/browser",
+    "devUrl": "http://localhost:4200",
+    "beforeDevCommand": "npm run start",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "EnvSync - Sync secrets. Not trust.",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "decorations": true,
+        "transparent": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.netlify.com https://api.vercel.com"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Zero-knowledge .env manager",
+    "longDescription": "EnvSync is a zero-knowledge .env manager that stores secrets encrypted, syncs across devices without exposing plaintext, and pushes directly to Netlify/Vercel/Railway via their APIs."
+  }
+}
