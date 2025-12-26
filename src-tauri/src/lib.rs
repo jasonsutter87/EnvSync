@@ -4,6 +4,7 @@ mod commands;
 pub mod crypto;
 mod db;
 pub mod error;
+pub mod flyio;
 pub mod github;
 pub mod models;
 mod netlify;
