@@ -1,3 +1,4 @@
+mod audit;
 mod commands;
 mod crypto;
 mod db;
@@ -7,12 +8,14 @@ mod netlify;
 mod railway;
 mod sync;
 mod veilcloud;
+mod veilkey;
 mod vercel;
 
 use std::sync::Arc;
 use tauri::Manager;
 
-use commands::{DbState, SyncState};
+use audit::AuditLogger;
+use commands::{AuditState, DbState, SyncState};
 use db::Database;
 use sync::SyncEngine;
 
@@ -46,9 +49,13 @@ pub fn run() {
             // Initialize sync engine
             let sync = Arc::new(SyncEngine::new(Arc::clone(&db)));
 
-            // Make database and sync engine available to all commands
+            // Initialize audit logger
+            let audit = Arc::new(AuditLogger::new(Arc::clone(&db)));
+
+            // Make database, sync engine, and audit logger available to all commands
             app.manage(db as DbState);
             app.manage(sync as SyncState);
+            app.manage(audit as AuditState);
 
             Ok(())
         })
@@ -114,6 +121,34 @@ pub fn run() {
             commands::railway_get_variables,
             commands::railway_push_env_vars,
             commands::railway_pull_env_vars,
+            // Phase 3: Team commands
+            commands::create_team,
+            commands::get_team,
+            commands::get_teams,
+            commands::get_team_with_members,
+            commands::update_team,
+            commands::delete_team,
+            // Team member commands
+            commands::invite_team_member,
+            commands::accept_team_invite,
+            commands::get_team_members,
+            commands::update_member_role,
+            commands::remove_team_member,
+            commands::revoke_team_invite,
+            // Project sharing commands
+            commands::share_project_with_team,
+            commands::unshare_project_from_team,
+            commands::get_project_teams,
+            commands::get_team_projects,
+            commands::check_project_access,
+            // VeilKey commands
+            commands::generate_team_key,
+            commands::get_team_key_shares,
+            commands::get_my_key_share,
+            // Audit log commands
+            commands::get_project_audit_log,
+            commands::get_team_audit_log,
+            commands::query_audit_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

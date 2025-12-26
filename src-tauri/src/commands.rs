@@ -1,17 +1,20 @@
 use std::sync::Arc;
 use tauri::State;
 
+use crate::audit::AuditLogger;
 use crate::db::Database;
 use crate::error::Result;
 use crate::models::{
-    AuthTokens, ConflictInfo, ConflictResolution, Environment, EnvironmentType, Project,
-    SyncEvent, SyncStatus, User, Variable, VaultStatus,
+    AuditEvent, AuditQuery, AuthTokens, ConflictInfo, ConflictResolution, Environment,
+    EnvironmentType, InviteStatus, KeyShare, Project, ProjectTeamAccess, SyncEvent, SyncStatus,
+    Team, TeamInvite, TeamMember, TeamRole, TeamWithMembers, User, Variable, VaultStatus,
 };
 use crate::sync::{SyncEngine, SyncResult};
-use crate::veilcloud::VeilCloudConfig;
+use crate::veilkey::VeilKey;
 
 pub type DbState = Arc<Database>;
 pub type SyncState = Arc<SyncEngine>;
+pub type AuditState = Arc<AuditLogger>;
 
 // ========== Vault Commands ==========
 
@@ -546,4 +549,500 @@ pub async fn railway_pull_env_vars(
     }
 
     Ok(imported)
+}
+
+// ========== Phase 3: Team Commands ==========
+
+#[tauri::command]
+pub fn create_team(
+    db: State<DbState>,
+    audit: State<AuditState>,
+    sync: State<SyncState>,
+    name: String,
+    description: Option<String>,
+    threshold: Option<u8>,
+    total_shares: Option<u8>,
+) -> Result<Team> {
+    let user = sync.current_user().ok_or_else(|| {
+        crate::error::EnvSyncError::NotAuthenticated
+    })?;
+
+    let t = threshold.unwrap_or(2);
+    let n = total_shares.unwrap_or(3);
+
+    let team = Team::new(
+        name.clone(),
+        description,
+        user.id.clone(),
+        t,
+        n,
+    );
+
+    let created = db.create_team(&team)?;
+
+    // Log the event
+    let _ = audit.log_team_created(&user.id, Some(&user.email), &created.id, &name);
+
+    Ok(created)
+}
+
+#[tauri::command]
+pub fn get_team(db: State<DbState>, id: String) -> Result<Team> {
+    db.get_team(&id)
+}
+
+#[tauri::command]
+pub fn get_teams(db: State<DbState>, sync: State<SyncState>) -> Result<Vec<Team>> {
+    let user = sync.current_user().ok_or_else(|| {
+        crate::error::EnvSyncError::NotAuthenticated
+    })?;
+
+    db.get_teams_for_user(&user.id)
+}
+
+#[tauri::command]
+pub fn get_team_with_members(db: State<DbState>, team_id: String) -> Result<TeamWithMembers> {
+    db.get_team_with_members(&team_id)
+}
+
+#[tauri::command]
+pub fn update_team(
+    db: State<DbState>,
+    audit: State<AuditState>,
+    sync: State<SyncState>,
+    id: String,
+    name: String,
+    description: Option<String>,
+) -> Result<Team> {
+    let user = sync.current_user().ok_or_else(|| {
+        crate::error::EnvSyncError::NotAuthenticated
+    })?;
+
+    let updated = db.update_team(&id, &name, description.as_deref())?;
+
+    let _ = audit.log_team_updated(
+        &user.id,
+        Some(&user.email),
+        &id,
+        &format!("{{\"name\": \"{}\"}}", name),
+    );
+
+    Ok(updated)
+}
+
+#[tauri::command]
+pub fn delete_team(
+    db: State<DbState>,
+    audit: State<AuditState>,
+    sync: State<SyncState>,
+    id: String,
+) -> Result<()> {
+    let user = sync.current_user().ok_or_else(|| {
+        crate::error::EnvSyncError::NotAuthenticated
+    })?;
+
+    let team = db.get_team(&id)?;
+
+    // Only owner can delete
+    if team.owner_id != user.id {
+        return Err(crate::error::EnvSyncError::PermissionDenied(
+            "Only the team owner can delete the team".to_string(),
+        ));
+    }
+
+    db.delete_team(&id)?;
+
+    let _ = audit.log_team_deleted(&user.id, Some(&user.email), &id, &team.name);
+
+    Ok(())
+}
+
+// ========== Team Member Commands ==========
+
+#[tauri::command]
+pub fn invite_team_member(
+    db: State<DbState>,
+    audit: State<AuditState>,
+    sync: State<SyncState>,
+    team_id: String,
+    email: String,
+    role: String,
+) -> Result<TeamInvite> {
+    let user = sync.current_user().ok_or_else(|| {
+        crate::error::EnvSyncError::NotAuthenticated
+    })?;
+
+    let team = db.get_team(&team_id)?;
+
+    // Check permissions - must be owner or admin
+    let member = db.get_team_member(&team_id, &user.id)?;
+    let can_invite = team.owner_id == user.id
+        || member.map(|m| m.role.can_admin()).unwrap_or(false);
+
+    if !can_invite {
+        return Err(crate::error::EnvSyncError::PermissionDenied(
+            "You don't have permission to invite members".to_string(),
+        ));
+    }
+
+    let role = TeamRole::from_str(&role);
+    let invite = TeamInvite::new(team_id.clone(), email.clone(), role.clone(), user.id.clone(), 7);
+
+    let created = db.create_invite(&invite)?;
+
+    let _ = audit.log_member_invited(&user.id, Some(&user.email), &team_id, &email, role.as_str());
+
+    Ok(created)
+}
+
+#[tauri::command]
+pub fn accept_team_invite(
+    db: State<DbState>,
+    audit: State<AuditState>,
+    sync: State<SyncState>,
+    token: String,
+) -> Result<TeamMember> {
+    let user = sync.current_user().ok_or_else(|| {
+        crate::error::EnvSyncError::NotAuthenticated
+    })?;
+
+    let invite = db.get_invite_by_token(&token)?.ok_or_else(|| {
+        crate::error::EnvSyncError::InviteNotFound(token.clone())
+    })?;
+
+    if !invite.is_valid() {
+        return Err(crate::error::EnvSyncError::InviteNotFound(
+            "Invite is expired or already used".to_string(),
+        ));
+    }
+
+    // Create the member
+    let member = TeamMember::new(
+        invite.team_id.clone(),
+        user.id.clone(),
+        user.email.clone(),
+        user.name.clone(),
+        invite.role.clone(),
+        invite.invited_by.clone(),
+    );
+
+    let created = db.add_team_member(&member)?;
+
+    // Update invite status
+    db.update_invite_status(&invite.id, InviteStatus::Accepted)?;
+
+    let _ = audit.log_member_joined(&user.id, Some(&user.email), &invite.team_id);
+
+    Ok(created)
+}
+
+#[tauri::command]
+pub fn get_team_members(db: State<DbState>, team_id: String) -> Result<Vec<TeamMember>> {
+    db.get_team_members(&team_id)
+}
+
+#[tauri::command]
+pub fn update_member_role(
+    db: State<DbState>,
+    audit: State<AuditState>,
+    sync: State<SyncState>,
+    team_id: String,
+    user_id: String,
+    new_role: String,
+) -> Result<()> {
+    let actor = sync.current_user().ok_or_else(|| {
+        crate::error::EnvSyncError::NotAuthenticated
+    })?;
+
+    let team = db.get_team(&team_id)?;
+
+    // Check permissions
+    let actor_member = db.get_team_member(&team_id, &actor.id)?;
+    let can_change = team.owner_id == actor.id
+        || actor_member.map(|m| m.role.can_admin()).unwrap_or(false);
+
+    if !can_change {
+        return Err(crate::error::EnvSyncError::PermissionDenied(
+            "You don't have permission to change roles".to_string(),
+        ));
+    }
+
+    let target_member = db.get_team_member(&team_id, &user_id)?.ok_or_else(|| {
+        crate::error::EnvSyncError::MemberNotFound(user_id.clone())
+    })?;
+
+    let old_role = target_member.role.as_str().to_string();
+    let new_role_enum = TeamRole::from_str(&new_role);
+
+    db.update_member_role(&team_id, &user_id, new_role_enum)?;
+
+    let _ = audit.log_member_role_changed(
+        &actor.id,
+        Some(&actor.email),
+        &team_id,
+        &user_id,
+        &old_role,
+        &new_role,
+    );
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn remove_team_member(
+    db: State<DbState>,
+    audit: State<AuditState>,
+    sync: State<SyncState>,
+    team_id: String,
+    user_id: String,
+) -> Result<()> {
+    let actor = sync.current_user().ok_or_else(|| {
+        crate::error::EnvSyncError::NotAuthenticated
+    })?;
+
+    let team = db.get_team(&team_id)?;
+
+    // Can't remove the owner
+    if user_id == team.owner_id {
+        return Err(crate::error::EnvSyncError::PermissionDenied(
+            "Cannot remove the team owner".to_string(),
+        ));
+    }
+
+    // Check permissions - owner, admin, or self
+    let is_self = actor.id == user_id;
+    let actor_member = db.get_team_member(&team_id, &actor.id)?;
+    let can_remove = is_self
+        || team.owner_id == actor.id
+        || actor_member.map(|m| m.role.can_admin()).unwrap_or(false);
+
+    if !can_remove {
+        return Err(crate::error::EnvSyncError::PermissionDenied(
+            "You don't have permission to remove members".to_string(),
+        ));
+    }
+
+    db.remove_team_member(&team_id, &user_id)?;
+
+    let _ = audit.log_member_removed(&actor.id, Some(&actor.email), &team_id, &user_id);
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn revoke_team_invite(
+    db: State<DbState>,
+    sync: State<SyncState>,
+    invite_id: String,
+) -> Result<()> {
+    // Verify user is authenticated
+    let _user = sync.current_user().ok_or_else(|| {
+        crate::error::EnvSyncError::NotAuthenticated
+    })?;
+
+    db.revoke_invite(&invite_id)
+}
+
+// ========== Project Sharing Commands ==========
+
+#[tauri::command]
+pub fn share_project_with_team(
+    db: State<DbState>,
+    audit: State<AuditState>,
+    sync: State<SyncState>,
+    project_id: String,
+    team_id: String,
+) -> Result<ProjectTeamAccess> {
+    let user = sync.current_user().ok_or_else(|| {
+        crate::error::EnvSyncError::NotAuthenticated
+    })?;
+
+    let team = db.get_team(&team_id)?;
+
+    // Check permissions - must be team owner or admin
+    let member = db.get_team_member(&team_id, &user.id)?;
+    let can_share = team.owner_id == user.id
+        || member.map(|m| m.role.can_admin()).unwrap_or(false);
+
+    if !can_share {
+        return Err(crate::error::EnvSyncError::PermissionDenied(
+            "You don't have permission to share projects".to_string(),
+        ));
+    }
+
+    let access = ProjectTeamAccess::new(project_id.clone(), team_id.clone(), user.id.clone());
+    let created = db.share_project_with_team(&access)?;
+
+    let _ = audit.log_project_shared(&user.id, Some(&user.email), &project_id, &team_id);
+
+    Ok(created)
+}
+
+#[tauri::command]
+pub fn unshare_project_from_team(
+    db: State<DbState>,
+    audit: State<AuditState>,
+    sync: State<SyncState>,
+    project_id: String,
+    team_id: String,
+) -> Result<()> {
+    let user = sync.current_user().ok_or_else(|| {
+        crate::error::EnvSyncError::NotAuthenticated
+    })?;
+
+    let team = db.get_team(&team_id)?;
+
+    // Check permissions
+    let member = db.get_team_member(&team_id, &user.id)?;
+    let can_unshare = team.owner_id == user.id
+        || member.map(|m| m.role.can_admin()).unwrap_or(false);
+
+    if !can_unshare {
+        return Err(crate::error::EnvSyncError::PermissionDenied(
+            "You don't have permission to unshare projects".to_string(),
+        ));
+    }
+
+    db.unshare_project_from_team(&project_id, &team_id)?;
+
+    let _ = audit.log_project_unshared(&user.id, Some(&user.email), &project_id, &team_id);
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_project_teams(db: State<DbState>, project_id: String) -> Result<Vec<Team>> {
+    db.get_project_teams(&project_id)
+}
+
+#[tauri::command]
+pub fn get_team_projects(db: State<DbState>, team_id: String) -> Result<Vec<Project>> {
+    db.get_team_projects(&team_id)
+}
+
+#[tauri::command]
+pub fn check_project_access(
+    db: State<DbState>,
+    sync: State<SyncState>,
+    project_id: String,
+) -> Result<Option<String>> {
+    let user = sync.current_user().ok_or_else(|| {
+        crate::error::EnvSyncError::NotAuthenticated
+    })?;
+
+    let role = db.user_can_access_project(&user.id, &project_id)?;
+    Ok(role.map(|r| r.as_str().to_string()))
+}
+
+// ========== VeilKey Commands ==========
+
+#[tauri::command]
+pub fn generate_team_key(
+    db: State<DbState>,
+    audit: State<AuditState>,
+    sync: State<SyncState>,
+    team_id: String,
+) -> Result<()> {
+    let user = sync.current_user().ok_or_else(|| {
+        crate::error::EnvSyncError::NotAuthenticated
+    })?;
+
+    let team = db.get_team(&team_id)?;
+
+    // Only owner can generate keys
+    if team.owner_id != user.id {
+        return Err(crate::error::EnvSyncError::PermissionDenied(
+            "Only the team owner can generate team keys".to_string(),
+        ));
+    }
+
+    let veilkey = VeilKey::new(team.threshold, team.total_shares)?;
+    let (_master_key, shares) = veilkey.generate_team_key()?;
+
+    // Get team members to distribute shares
+    let members = db.get_team_members(&team_id)?;
+
+    if members.len() < team.total_shares as usize {
+        return Err(crate::error::EnvSyncError::InvalidThreshold(
+            format!(
+                "Need at least {} members to distribute shares, have {}",
+                team.total_shares,
+                members.len()
+            ),
+        ));
+    }
+
+    // For now, store shares without encryption (would need user's public key in practice)
+    for (i, (share_index, share_data)) in shares.iter().enumerate() {
+        if i >= members.len() {
+            break;
+        }
+
+        let member = &members[i];
+        let key_share = KeyShare::new(
+            team_id.clone(),
+            *share_index,
+            share_data.clone(),
+            member.user_id.clone(),
+        );
+
+        db.store_key_share(&key_share)?;
+        db.update_member_share_index(&team_id, &member.user_id, *share_index)?;
+
+        let _ = audit.log_key_share_distributed(
+            &user.id,
+            Some(&user.email),
+            &team_id,
+            &member.user_id,
+            *share_index,
+        );
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_team_key_shares(db: State<DbState>, team_id: String) -> Result<Vec<KeyShare>> {
+    db.get_team_key_shares(&team_id)
+}
+
+#[tauri::command]
+pub fn get_my_key_share(
+    db: State<DbState>,
+    sync: State<SyncState>,
+    team_id: String,
+) -> Result<Option<KeyShare>> {
+    let user = sync.current_user().ok_or_else(|| {
+        crate::error::EnvSyncError::NotAuthenticated
+    })?;
+
+    db.get_user_key_share(&team_id, &user.id)
+}
+
+// ========== Audit Log Commands ==========
+
+#[tauri::command]
+pub fn get_project_audit_log(
+    db: State<DbState>,
+    project_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<AuditEvent>> {
+    db.get_project_audit_log(&project_id, limit)
+}
+
+#[tauri::command]
+pub fn get_team_audit_log(
+    db: State<DbState>,
+    team_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<AuditEvent>> {
+    db.get_team_audit_log(&team_id, limit)
+}
+
+#[tauri::command]
+pub fn query_audit_log(
+    db: State<DbState>,
+    query: AuditQuery,
+) -> Result<Vec<AuditEvent>> {
+    db.query_audit_log(&query)
 }
