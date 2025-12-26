@@ -1,0 +1,134 @@
+# EnvSync Docker Compose Configuration
+# Self-hosted deployment with PostgreSQL, Redis, and the Angular frontend
+
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:16-alpine
+    container_name: envsync-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-envsync}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-envsync_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-envsync}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-envsync}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - envsync-network
+
+  # Redis for sessions and caching
+  redis:
+    image: redis:7-alpine
+    container_name: envsync-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - envsync-network
+
+  # FastAPI Backend
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: envsync-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Application
+      DEBUG: ${DEBUG:-false}
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+
+      # Database
+      DATABASE_URL: postgresql://${POSTGRES_USER:-envsync}:${POSTGRES_PASSWORD:-envsync_secret}@db:5432/${POSTGRES_DB:-envsync}
+
+      # Redis
+      REDIS_URL: redis://redis:6379/0
+
+      # JWT
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-jwt-secret-change-in-production}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+
+      # CORS
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:4200,http://localhost:3000}
+
+      # VeilCloud (optional)
+      VEILCLOUD_API_URL: ${VEILCLOUD_API_URL:-https://api.veilcloud.io}
+      VEILCLOUD_API_KEY: ${VEILCLOUD_API_KEY:-}
+
+      # SSO (optional)
+      SSO_ENABLED: ${SSO_ENABLED:-false}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - envsync-network
+
+  # Angular Frontend (served by nginx)
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: envsync-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      API_URL: ${API_URL:-http://api:8000}
+    ports:
+      - "${WEB_PORT:-3000}:80"
+    networks:
+      - envsync-network
+
+  # Nginx Reverse Proxy (optional, for production)
+  nginx:
+    image: nginx:alpine
+    container_name: envsync-nginx
+    restart: unless-stopped
+    depends_on:
+      - api
+      - web
+    ports:
+      - "${NGINX_PORT:-80}:80"
+      - "${NGINX_SSL_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    networks:
+      - envsync-network
+    profiles:
+      - production
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  envsync-network:
+    driver: bridge
