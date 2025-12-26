@@ -110,12 +110,17 @@ impl Database {
             ",
         )?;
 
-        // Store metadata
+        // Store metadata in database
         let salt_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &salt);
         conn.execute(
             "INSERT INTO metadata (key, value) VALUES ('salt', ?1), ('password_hash', ?2)",
             params![salt_b64, password_hash],
         )?;
+
+        // Also write salt to external file for unlock to work
+        // (SQLCipher needs the key before we can read the DB)
+        let salt_path = self.db_path.with_extension("salt");
+        std::fs::write(&salt_path, &salt_b64)?;
 
         // Store connection and key
         *self.conn.lock().unwrap() = Some(conn);
