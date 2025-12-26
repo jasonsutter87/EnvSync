@@ -17,7 +17,6 @@ const KEY_SIZE: usize = 32;
 /// Derives a 256-bit encryption key from a password using Argon2id
 pub fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; KEY_SIZE]> {
     use argon2::Argon2;
-    use sha2::{Digest, Sha256};
 
     // Use Argon2id with recommended parameters
     let argon2 = Argon2::default();

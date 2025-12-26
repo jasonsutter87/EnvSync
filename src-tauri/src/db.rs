@@ -193,7 +193,7 @@ impl Database {
     }
 
     /// Get a reference to the connection, returns error if vault is locked
-    fn get_conn(&self) -> Result<std::sync::MutexGuard<Option<Connection>>> {
+    fn get_conn(&self) -> Result<std::sync::MutexGuard<'_, Option<Connection>>> {
         let guard = self.conn.lock().unwrap();
         if guard.is_none() {
             return Err(EnvSyncError::VaultLocked);
