@@ -3,9 +3,15 @@ use tauri::State;
 
 use crate::db::Database;
 use crate::error::Result;
-use crate::models::{Environment, EnvironmentType, Project, Variable, VaultStatus};
+use crate::models::{
+    AuthTokens, ConflictInfo, ConflictResolution, Environment, EnvironmentType, Project,
+    SyncEvent, SyncStatus, User, Variable, VaultStatus,
+};
+use crate::sync::{SyncEngine, SyncResult};
+use crate::veilcloud::VeilCloudConfig;
 
 pub type DbState = Arc<Database>;
+pub type SyncState = Arc<SyncEngine>;
 
 // ========== Vault Commands ==========
 
@@ -289,4 +295,89 @@ pub async fn netlify_pull_env_vars(
     }
 
     Ok(imported)
+}
+
+// ========== Sync Commands ==========
+
+#[tauri::command]
+pub fn get_sync_status(sync: State<SyncState>) -> SyncStatus {
+    sync.get_status()
+}
+
+#[tauri::command]
+pub fn is_sync_connected(sync: State<SyncState>) -> bool {
+    sync.is_connected()
+}
+
+#[tauri::command]
+pub fn get_sync_user(sync: State<SyncState>) -> Option<User> {
+    sync.current_user()
+}
+
+#[tauri::command]
+pub fn get_sync_history(sync: State<SyncState>, limit: usize) -> Vec<SyncEvent> {
+    sync.get_history(limit)
+}
+
+#[tauri::command]
+pub fn get_sync_conflicts(sync: State<SyncState>) -> Vec<ConflictInfo> {
+    sync.get_conflicts()
+}
+
+#[tauri::command]
+pub async fn sync_signup(
+    sync: State<'_, SyncState>,
+    email: String,
+    password: String,
+    name: Option<String>,
+) -> Result<User> {
+    sync.signup(&email, &password, name.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn sync_login(
+    sync: State<'_, SyncState>,
+    email: String,
+    password: String,
+) -> Result<User> {
+    sync.login(&email, &password).await
+}
+
+#[tauri::command]
+pub fn sync_logout(sync: State<SyncState>) {
+    sync.logout()
+}
+
+#[tauri::command]
+pub fn sync_restore_session(sync: State<SyncState>, tokens: AuthTokens, user: User) {
+    sync.restore_session(tokens, user)
+}
+
+#[tauri::command]
+pub fn sync_get_tokens(sync: State<SyncState>) -> Option<AuthTokens> {
+    sync.get_tokens()
+}
+
+#[tauri::command]
+pub async fn sync_now(sync: State<'_, SyncState>) -> Result<SyncResult> {
+    sync.sync().await
+}
+
+#[tauri::command]
+pub async fn sync_resolve_conflict(
+    sync: State<'_, SyncState>,
+    project_id: String,
+    resolution: ConflictResolution,
+) -> Result<()> {
+    sync.resolve_conflict(&project_id, resolution).await
+}
+
+#[tauri::command]
+pub fn sync_set_enabled(db: State<DbState>, project_id: String, enabled: bool) -> Result<()> {
+    db.set_sync_enabled(&project_id, enabled)
+}
+
+#[tauri::command]
+pub fn sync_mark_dirty(db: State<DbState>, project_id: String) -> Result<()> {
+    db.mark_project_dirty(&project_id)
 }

@@ -10,8 +10,9 @@ mod veilcloud;
 use std::sync::Arc;
 use tauri::Manager;
 
-use commands::DbState;
+use commands::{DbState, SyncState};
 use db::Database;
+use sync::SyncEngine;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -40,8 +41,12 @@ pub fn run() {
             // Initialize database
             let db = Arc::new(Database::new(db_path));
 
-            // Make database available to all commands
+            // Initialize sync engine
+            let sync = Arc::new(SyncEngine::new(Arc::clone(&db)));
+
+            // Make database and sync engine available to all commands
             app.manage(db as DbState);
+            app.manage(sync as SyncState);
 
             Ok(())
         })
@@ -80,6 +85,21 @@ pub fn run() {
             commands::netlify_get_env_vars,
             commands::netlify_push_env_vars,
             commands::netlify_pull_env_vars,
+            // Sync commands
+            commands::get_sync_status,
+            commands::is_sync_connected,
+            commands::get_sync_user,
+            commands::get_sync_history,
+            commands::get_sync_conflicts,
+            commands::sync_signup,
+            commands::sync_login,
+            commands::sync_logout,
+            commands::sync_restore_session,
+            commands::sync_get_tokens,
+            commands::sync_now,
+            commands::sync_resolve_conflict,
+            commands::sync_set_enabled,
+            commands::sync_mark_dirty,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
