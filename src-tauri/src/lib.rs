@@ -1,9 +1,9 @@
 mod audit;
 mod commands;
-mod crypto;
+pub mod crypto;
 mod db;
 pub mod error;
-mod models;
+pub mod models;
 mod netlify;
 mod railway;
 mod sync;
