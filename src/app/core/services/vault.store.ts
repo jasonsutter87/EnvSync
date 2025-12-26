@@ -51,7 +51,39 @@ export class VaultStore {
     return this._environments().find((e) => e.id === id) ?? null;
   });
 
+  private autoLockInterval: ReturnType<typeof setInterval> | null = null;
+
   constructor(private readonly tauri: TauriService) {}
+
+  // ========== Auto-Lock ==========
+
+  startAutoLockCheck(): void {
+    if (this.autoLockInterval) return;
+
+    // Check every 30 seconds
+    this.autoLockInterval = setInterval(async () => {
+      const wasLocked = await this.tauri.checkAutoLock();
+      if (wasLocked) {
+        await this.checkStatus();
+        this.clearState();
+      }
+    }, 30000);
+  }
+
+  stopAutoLockCheck(): void {
+    if (this.autoLockInterval) {
+      clearInterval(this.autoLockInterval);
+      this.autoLockInterval = null;
+    }
+  }
+
+  async touchActivity(): Promise<void> {
+    try {
+      await this.tauri.touchActivity();
+    } catch (err) {
+      // Ignore errors
+    }
+  }
 
   // ========== Vault Operations ==========
 
@@ -86,6 +118,7 @@ export class VaultStore {
       await this.tauri.unlockVault(masterPassword);
       await this.checkStatus();
       await this.loadProjects();
+      this.startAutoLockCheck(); // Start auto-lock monitoring
       return true;
     } catch (err) {
       this.handleError(err);
@@ -96,6 +129,7 @@ export class VaultStore {
   }
 
   async lock(): Promise<void> {
+    this.stopAutoLockCheck(); // Stop auto-lock monitoring
     try {
       await this.tauri.lockVault();
       this._status.update((s) => ({ ...s, is_unlocked: false }));

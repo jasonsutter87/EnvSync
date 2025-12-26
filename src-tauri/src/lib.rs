@@ -48,6 +48,8 @@ pub fn run() {
             commands::initialize_vault,
             commands::unlock_vault,
             commands::lock_vault,
+            commands::check_auto_lock,
+            commands::touch_activity,
             // Project commands
             commands::create_project,
             commands::get_projects,

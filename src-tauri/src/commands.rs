@@ -29,6 +29,16 @@ pub fn lock_vault(db: State<DbState>) {
     db.lock()
 }
 
+#[tauri::command]
+pub fn check_auto_lock(db: State<DbState>) -> bool {
+    db.auto_lock_if_inactive()
+}
+
+#[tauri::command]
+pub fn touch_activity(db: State<DbState>) {
+    db.touch()
+}
+
 // ========== Project Commands ==========
 
 #[tauri::command]

@@ -30,6 +30,14 @@ export class TauriService {
     return invoke('lock_vault');
   }
 
+  async checkAutoLock(): Promise<boolean> {
+    return invoke<boolean>('check_auto_lock');
+  }
+
+  async touchActivity(): Promise<void> {
+    return invoke('touch_activity');
+  }
+
   // ========== Project Operations ==========
 
   async createProject(name: string, description?: string): Promise<Project> {

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -6,10 +7,14 @@ use crate::crypto::{decrypt, derive_key, encrypt, generate_salt, hash_password, 
 use crate::error::{EnvSyncError, Result};
 use crate::models::{Environment, EnvironmentType, Project, Variable, VaultStatus};
 
+/// Auto-lock timeout in seconds (5 minutes)
+const AUTO_LOCK_TIMEOUT_SECS: i64 = 300;
+
 pub struct Database {
     conn: Mutex<Option<Connection>>,
     encryption_key: Mutex<Option<[u8; 32]>>,
     db_path: PathBuf,
+    last_activity: Mutex<Option<DateTime<Utc>>>,
 }
 
 impl Database {
@@ -18,6 +23,38 @@ impl Database {
             conn: Mutex::new(None),
             encryption_key: Mutex::new(None),
             db_path,
+            last_activity: Mutex::new(None),
+        }
+    }
+
+    /// Update the last activity timestamp
+    pub fn touch(&self) {
+        *self.last_activity.lock().unwrap() = Some(Utc::now());
+    }
+
+    /// Check if the vault should auto-lock due to inactivity
+    pub fn should_auto_lock(&self) -> bool {
+        if !self.is_unlocked() {
+            return false;
+        }
+
+        let last = self.last_activity.lock().unwrap();
+        match *last {
+            Some(time) => {
+                let elapsed = Utc::now().signed_duration_since(time);
+                elapsed.num_seconds() > AUTO_LOCK_TIMEOUT_SECS
+            }
+            None => false,
+        }
+    }
+
+    /// Auto-lock if inactive
+    pub fn auto_lock_if_inactive(&self) -> bool {
+        if self.should_auto_lock() {
+            self.lock();
+            true
+        } else {
+            false
         }
     }
 
@@ -36,7 +73,7 @@ impl Database {
         VaultStatus {
             is_initialized: self.is_initialized(),
             is_unlocked: self.is_unlocked(),
-            last_activity: None, // TODO: Track last activity
+            last_activity: *self.last_activity.lock().unwrap(),
         }
     }
 
@@ -187,6 +224,7 @@ impl Database {
 
         *self.conn.lock().unwrap() = Some(temp_conn);
         *self.encryption_key.lock().unwrap() = Some(key);
+        self.touch(); // Start activity tracking
 
         Ok(())
     }
@@ -195,6 +233,7 @@ impl Database {
     pub fn lock(&self) {
         *self.conn.lock().unwrap() = None;
         *self.encryption_key.lock().unwrap() = None;
+        *self.last_activity.lock().unwrap() = None;
     }
 
     /// Get a reference to the connection, returns error if vault is locked
@@ -203,6 +242,7 @@ impl Database {
         if guard.is_none() {
             return Err(EnvSyncError::VaultLocked);
         }
+        self.touch(); // Update activity on each DB access
         Ok(guard)
     }
 
