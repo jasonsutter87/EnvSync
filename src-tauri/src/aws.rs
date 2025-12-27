@@ -147,7 +147,7 @@ impl Parameter {
                 .r#type()
                 .map(ParameterType::from_aws_type)
                 .unwrap_or(ParameterType::String),
-            version: aws_param.version(),
+            version: Some(aws_param.version()),
             last_modified_date: aws_param
                 .last_modified_date()
                 .map(|dt| dt.to_string()),
@@ -192,6 +192,7 @@ impl AwsClient {
         aws_sdk_ssm::Config::builder()
             .credentials_provider(creds)
             .region(region)
+            .behavior_version(aws_sdk_ssm::config::BehaviorVersion::latest())
             .build()
     }
 
@@ -422,7 +423,7 @@ impl AwsClient {
             .await
             .map_err(|e| AwsError::SdkError(e.to_string()))?;
 
-        Ok(result.version().unwrap_or(1))
+        Ok(result.version())
     }
 
     /// Put parameter with description
@@ -452,7 +453,7 @@ impl AwsClient {
             .await
             .map_err(|e| AwsError::SdkError(e.to_string()))?;
 
-        Ok(result.version().unwrap_or(1))
+        Ok(result.version())
     }
 
     /// Put parameter with overwrite option
@@ -482,7 +483,7 @@ impl AwsClient {
             .await
             .map_err(|e| AwsError::SdkError(e.to_string()))?;
 
-        Ok(result.version().unwrap_or(1))
+        Ok(result.version())
     }
 
     // ========================================

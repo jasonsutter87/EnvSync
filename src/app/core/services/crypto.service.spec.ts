@@ -65,13 +65,13 @@ describe('CryptoService', () => {
 
     it('should derive key using PBKDF2', async () => {
       await service.initialize(testPassword);
-      expect(mocks.crypto.subtle.importKey).toHaveBeenCalledWith(
-        'raw',
-        expect.any(Uint8Array),
-        'PBKDF2',
-        false,
-        ['deriveKey']
-      );
+      expect(mocks.crypto.subtle.importKey).toHaveBeenCalled();
+      const importKeyCall = mocks.crypto.subtle.importKey.mock.calls[0];
+      expect(importKeyCall[0]).toBe('raw');
+      expect(ArrayBuffer.isView(importKeyCall[1])).toBe(true);
+      expect(importKeyCall[2]).toBe('PBKDF2');
+      expect(importKeyCall[3]).toBe(false);
+      expect(importKeyCall[4]).toEqual(['deriveKey']);
       expect(mocks.crypto.subtle.deriveKey).toHaveBeenCalled();
     });
 
@@ -144,14 +144,11 @@ describe('CryptoService', () => {
 
     it('should call crypto.subtle.encrypt with correct parameters', async () => {
       await service.encrypt(testPlaintext);
-      expect(mocks.crypto.subtle.encrypt).toHaveBeenCalledWith(
-        expect.objectContaining({
-          name: 'AES-GCM',
-          iv: expect.any(Uint8Array),
-        }),
-        expect.anything(),
-        expect.any(Uint8Array)
-      );
+      expect(mocks.crypto.subtle.encrypt).toHaveBeenCalled();
+      const encryptCall = mocks.crypto.subtle.encrypt.mock.calls[0];
+      expect(encryptCall[0].name).toBe('AES-GCM');
+      expect(ArrayBuffer.isView(encryptCall[0].iv)).toBe(true);
+      expect(ArrayBuffer.isView(encryptCall[2])).toBe(true);
     });
 
     it('should throw error when encrypting without initialization', async () => {
@@ -228,8 +225,10 @@ describe('CryptoService', () => {
     it('should handle decryption errors gracefully', async () => {
       mocks.crypto.subtle.decrypt.mockRejectedValue(new Error('Decryption failed'));
 
+      // Use valid base64 strings (the error should come from decrypt, not base64 parsing)
+      const validBase64 = btoa('test-data');
       await expect(
-        service.decrypt('invalid-ciphertext', 'invalid-nonce')
+        service.decrypt(validBase64, validBase64)
       ).rejects.toThrow('Decryption failed - incorrect password or corrupted data');
     });
 
@@ -240,10 +239,10 @@ describe('CryptoService', () => {
       expect(mocks.crypto.subtle.decrypt).toHaveBeenCalledWith(
         expect.objectContaining({
           name: 'AES-GCM',
-          iv: expect.any(Uint8Array),
+          iv: expect.any(ArrayBuffer),
         }),
         expect.anything(),
-        expect.any(Uint8Array)
+        expect.any(ArrayBuffer)
       );
     });
 
@@ -269,9 +268,11 @@ describe('CryptoService', () => {
     it('should fail with incorrect nonce', async () => {
       mocks.crypto.subtle.decrypt.mockRejectedValue(new Error('Invalid nonce'));
       const encrypted = await service.encrypt(testPlaintext);
+      // Use valid base64 for wrong nonce
+      const wrongNonce = btoa('wrong-nonce-data');
 
       await expect(
-        service.decrypt(encrypted.ciphertext, 'wrong-nonce')
+        service.decrypt(encrypted.ciphertext, wrongNonce)
       ).rejects.toThrow('Decryption failed - incorrect password or corrupted data');
     });
   });
@@ -379,10 +380,10 @@ describe('CryptoService', () => {
 
     it('should use SHA-256 for hashing', async () => {
       await service.hashPassword(testPassword);
-      expect(mocks.crypto.subtle.digest).toHaveBeenCalledWith(
-        'SHA-256',
-        expect.any(Uint8Array)
-      );
+      expect(mocks.crypto.subtle.digest).toHaveBeenCalled();
+      const digestCall = mocks.crypto.subtle.digest.mock.calls[0];
+      expect(digestCall[0]).toBe('SHA-256');
+      expect(ArrayBuffer.isView(digestCall[1])).toBe(true);
     });
 
     it('should return base64 encoded hash', async () => {

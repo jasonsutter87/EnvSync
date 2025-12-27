@@ -2,8 +2,9 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use zeroize::Zeroize;
 
-use crate::crypto::{decrypt, derive_key, encrypt, generate_salt, hash_password, verify_password};
+use crate::crypto::{decrypt, derive_key, encrypt, generate_salt, hash_password, verify_password, SecureKey};
 use crate::error::{EnvSyncError, Result};
 use crate::models::{
     AuditEvent, AuditEventType, AuditQuery, Environment, EnvironmentType, InviteStatus,
@@ -16,7 +17,7 @@ const AUTO_LOCK_TIMEOUT_SECS: i64 = 300;
 
 pub struct Database {
     conn: Mutex<Option<Connection>>,
-    encryption_key: Mutex<Option<[u8; 32]>>,
+    encryption_key: Mutex<Option<SecureKey>>,
     db_path: PathBuf,
     last_activity: Mutex<Option<DateTime<Utc>>>,
 }
@@ -104,9 +105,11 @@ impl Database {
         // Open encrypted database
         let conn = Connection::open(&self.db_path)?;
 
-        // Set SQLCipher key
-        let key_hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
-        conn.execute_batch(&format!("PRAGMA key = \"x'{}'\"", key_hex))?;
+        // Set SQLCipher key - zeroize the hex string after use to prevent key leakage
+        let mut key_hex: String = key.as_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+        let result = conn.execute_batch(&format!("PRAGMA key = \"x'{}'\"", key_hex));
+        key_hex.zeroize(); // Clear the key from memory immediately
+        result.map_err(|_| EnvSyncError::Encryption("Failed to set database encryption key".to_string()))?;
 
         // Create tables
         conn.execute_batch(
@@ -361,9 +364,11 @@ impl Database {
 
         let key = derive_key(master_password, &salt)?;
 
-        // Try to open with the derived key
-        let key_hex: String = key.iter().map(|b| format!("{:02x}", b)).collect();
-        temp_conn.execute_batch(&format!("PRAGMA key = \"x'{}'\"", key_hex))?;
+        // Try to open with the derived key - zeroize hex string after use
+        let mut key_hex: String = key.as_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+        let result = temp_conn.execute_batch(&format!("PRAGMA key = \"x'{}'\"", key_hex));
+        key_hex.zeroize(); // Clear the key from memory immediately
+        result.map_err(|_| EnvSyncError::InvalidPassword)?;
 
         // Verify by trying to read from the database
         temp_conn
@@ -405,10 +410,14 @@ impl Database {
         Ok(guard)
     }
 
-    /// Get the encryption key, returns error if vault is locked
+    /// Get the encryption key, returns error if vault is locked.
+    /// Returns a copy of the key bytes for encryption/decryption operations.
     fn get_key(&self) -> Result<[u8; 32]> {
         let guard = self.encryption_key.lock().unwrap();
-        guard.ok_or(EnvSyncError::VaultLocked)
+        match guard.as_ref() {
+            Some(key) => Ok(*key.as_bytes()),
+            None => Err(EnvSyncError::VaultLocked),
+        }
     }
 
     // ========== Project Operations ==========
@@ -1628,12 +1637,15 @@ impl Database {
 
         sql.push_str(" ORDER BY timestamp DESC");
 
-        if let Some(limit) = query.limit {
-            sql.push_str(&format!(" LIMIT {}", limit));
+        // Use parameterized queries to prevent SQL injection
+        if query.limit.is_some() {
+            sql.push_str(" LIMIT ?");
+            params_vec.push(Box::new(query.limit.unwrap() as i64));
         }
 
-        if let Some(offset) = query.offset {
-            sql.push_str(&format!(" OFFSET {}", offset));
+        if query.offset.is_some() {
+            sql.push_str(" OFFSET ?");
+            params_vec.push(Box::new(query.offset.unwrap() as i64));
         }
 
         let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
@@ -1807,13 +1819,19 @@ impl Database {
             where_clause
         );
 
-        if let Some(lim) = limit {
-            sql.push_str(&format!(" LIMIT {}", lim));
+        // Use parameterized queries to prevent SQL injection
+        if limit.is_some() {
+            sql.push_str(" LIMIT ?");
+            params_vec.push(Box::new(limit.unwrap() as i64));
         }
 
-        if let Some(off) = offset {
-            sql.push_str(&format!(" OFFSET {}", off));
+        if offset.is_some() {
+            sql.push_str(" OFFSET ?");
+            params_vec.push(Box::new(offset.unwrap() as i64));
         }
+
+        // Rebuild params_refs after adding limit/offset
+        let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
 
         let mut stmt = conn.prepare(&sql)?;
 
@@ -1854,14 +1872,11 @@ impl Database {
              ORDER BY timestamp DESC"
         );
 
+        // Use parameterized query to prevent SQL injection
         if let Some(lim) = limit {
-            sql.push_str(&format!(" LIMIT {}", lim));
-        }
-
-        let mut stmt = conn.prepare(&sql)?;
-
-        let entries = stmt
-            .query_map(params![variable_id], |row| {
+            sql.push_str(" LIMIT ?2");
+            let mut stmt = conn.prepare(&sql)?;
+            let entries = stmt.query_map(params![variable_id, lim as i64], |row| {
                 Ok(VariableHistoryEntry {
                     id: row.get(0)?,
                     variable_id: row.get(1)?,
@@ -1879,8 +1894,29 @@ impl Database {
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-
-        Ok(entries)
+            Ok(entries)
+        } else {
+            let mut stmt = conn.prepare(&sql)?;
+            let entries = stmt.query_map(params![variable_id], |row| {
+                Ok(VariableHistoryEntry {
+                    id: row.get(0)?,
+                    variable_id: row.get(1)?,
+                    environment_id: row.get(2)?,
+                    project_id: row.get(3)?,
+                    variable_key: row.get(4)?,
+                    old_value: row.get(5)?,
+                    new_value: row.get(6)?,
+                    changed_by: row.get(7)?,
+                    changed_by_id: row.get(8)?,
+                    change_type: row.get(9)?,
+                    timestamp: row.get(10)?,
+                    ip_address: row.get(11)?,
+                    user_agent: row.get(12)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(entries)
+        }
     }
 
     /// Get a specific history entry by ID

@@ -3,18 +3,20 @@ use tauri::State;
 
 use crate::audit::AuditLogger;
 use crate::db::Database;
-use crate::error::Result;
+use crate::error::{EnvSyncError, Result};
 use crate::models::{
     AuditEvent, AuditQuery, AuthTokens, ConflictInfo, ConflictResolution, Environment,
     EnvironmentType, InviteStatus, KeyShare, Project, ProjectTeamAccess, SyncEvent, SyncStatus,
     Team, TeamInvite, TeamMember, TeamRole, TeamWithMembers, User, Variable, VaultStatus,
 };
+use crate::rate_limit::RateLimiter;
 use crate::sync::{SyncEngine, SyncResult};
 use crate::veilkey::VeilKey;
 
 pub type DbState = Arc<Database>;
 pub type SyncState = Arc<SyncEngine>;
 pub type AuditState = Arc<AuditLogger>;
+pub type RateLimitState = Arc<RateLimiter>;
 
 // ========== Vault Commands ==========
 
@@ -29,8 +31,35 @@ pub fn initialize_vault(db: State<DbState>, master_password: String) -> Result<(
 }
 
 #[tauri::command]
-pub fn unlock_vault(db: State<DbState>, master_password: String) -> Result<()> {
-    db.unlock(&master_password)
+pub fn unlock_vault(
+    db: State<DbState>,
+    rate_limiter: State<RateLimitState>,
+    master_password: String,
+) -> Result<()> {
+    // Rate limit key is constant since there's only one vault per installation
+    let rate_key = "vault_unlock";
+
+    // Check if we're currently rate limited
+    if let Err(remaining_secs) = rate_limiter.check(rate_key) {
+        return Err(EnvSyncError::RateLimited(remaining_secs));
+    }
+
+    // Attempt unlock
+    match db.unlock(&master_password) {
+        Ok(()) => {
+            // Success - clear rate limit attempts
+            rate_limiter.record_success(rate_key);
+            Ok(())
+        }
+        Err(e) => {
+            // Failure - record the failed attempt
+            if let Err(lockout_secs) = rate_limiter.record_failure(rate_key) {
+                // This attempt triggered a lockout
+                return Err(EnvSyncError::RateLimited(lockout_secs));
+            }
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]

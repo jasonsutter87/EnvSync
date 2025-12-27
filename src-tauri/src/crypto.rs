@@ -8,14 +8,109 @@ use argon2::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use rand::RngCore;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::error::{EnvSyncError, Result};
 
 const NONCE_SIZE: usize = 12;
-const KEY_SIZE: usize = 32;
+pub const KEY_SIZE: usize = 32;
 
-/// Derives a 256-bit encryption key from a password using Argon2id
-pub fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; KEY_SIZE]> {
+/// A wrapper around an encryption key that automatically zeroizes on drop.
+/// This prevents sensitive key material from lingering in memory.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecureKey {
+    key: [u8; KEY_SIZE],
+}
+
+impl std::fmt::Debug for SecureKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print the actual key bytes in debug output
+        f.debug_struct("SecureKey")
+            .field("key", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl SecureKey {
+    /// Create a new secure key from raw bytes
+    pub fn new(key: [u8; KEY_SIZE]) -> Self {
+        Self { key }
+    }
+
+    /// Get a reference to the underlying key bytes
+    pub fn as_bytes(&self) -> &[u8; KEY_SIZE] {
+        &self.key
+    }
+
+    /// Get the length of the key (always 32 bytes)
+    pub fn len(&self) -> usize {
+        KEY_SIZE
+    }
+
+    /// Check if the key is empty (always false for valid keys)
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+
+    /// Returns an iterator over the key bytes
+    pub fn iter(&self) -> std::slice::Iter<'_, u8> {
+        self.key.iter()
+    }
+}
+
+// Allow SecureKey to be used where &[u8; 32] is expected
+impl std::ops::Deref for SecureKey {
+    type Target = [u8; KEY_SIZE];
+
+    fn deref(&self) -> &Self::Target {
+        &self.key
+    }
+}
+
+// Allow indexing into SecureKey
+impl std::ops::Index<usize> for SecureKey {
+    type Output = u8;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.key[index]
+    }
+}
+
+impl Drop for SecureKey {
+    fn drop(&mut self) {
+        self.key.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for SecureKey {}
+
+/// A wrapper for sensitive strings that zeroizes on drop
+#[derive(Clone)]
+pub struct SecureString {
+    inner: String,
+}
+
+impl SecureString {
+    pub fn new(s: String) -> Self {
+        Self { inner: s }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.inner
+    }
+}
+
+impl Drop for SecureString {
+    fn drop(&mut self) {
+        self.inner.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for SecureString {}
+
+/// Derives a 256-bit encryption key from a password using Argon2id.
+/// Returns a SecureKey that automatically zeroizes when dropped.
+pub fn derive_key(password: &str, salt: &[u8]) -> Result<SecureKey> {
     use argon2::Argon2;
 
     // Use Argon2id with recommended parameters
@@ -28,7 +123,7 @@ pub fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; KEY_SIZE]> {
         .hash_password_into(password.as_bytes(), salt, &mut output)
         .map_err(|e| EnvSyncError::Encryption(format!("Key derivation failed: {}", e)))?;
 
-    Ok(output)
+    Ok(SecureKey::new(output))
 }
 
 /// Generates a random salt for key derivation
@@ -147,8 +242,8 @@ mod tests {
         let key = derive_key(password, &salt).unwrap();
 
         let plaintext = "Hello, World! This is a secret.";
-        let encrypted = encrypt(plaintext, &key).unwrap();
-        let decrypted = decrypt(&encrypted, &key).unwrap();
+        let encrypted = encrypt(plaintext, key.as_bytes()).unwrap();
+        let decrypted = decrypt(&encrypted, key.as_bytes()).unwrap();
 
         assert_eq!(plaintext, decrypted);
     }
@@ -168,8 +263,8 @@ mod tests {
         let key1 = derive_key("password1", &salt).unwrap();
         let key2 = derive_key("password2", &salt).unwrap();
 
-        let encrypted = encrypt("secret", &key1).unwrap();
-        let result = decrypt(&encrypted, &key2);
+        let encrypted = encrypt("secret", key1.as_bytes()).unwrap();
+        let result = decrypt(&encrypted, key2.as_bytes());
 
         assert!(result.is_err());
     }

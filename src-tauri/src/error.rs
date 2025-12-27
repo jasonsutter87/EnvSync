@@ -15,6 +15,9 @@ pub enum EnvSyncError {
     #[error("Invalid password")]
     InvalidPassword,
 
+    #[error("Rate limited: too many failed attempts. Try again in {0} seconds")]
+    RateLimited(u64),
+
     #[error("Vault is locked")]
     VaultLocked,
 

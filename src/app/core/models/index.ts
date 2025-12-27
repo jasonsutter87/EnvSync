@@ -78,9 +78,13 @@ export interface User {
   created_at: string;
 }
 
+/** VeilSign credential-based authentication */
 export interface AuthTokens {
-  access_token: string;
-  refresh_token: string;
+  /** VeilSign credential (base64) */
+  credential: string;
+  /** VeilSign signature (base64) */
+  signature: string;
+  /** When the credential expires */
   expires_at: string;
 }
 

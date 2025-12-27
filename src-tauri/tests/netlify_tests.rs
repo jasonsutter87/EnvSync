@@ -9,6 +9,7 @@ use serde_json::json;
 
 // Mock server setup using a simple test helper
 mod mock_server {
+    use serde_json::json;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 

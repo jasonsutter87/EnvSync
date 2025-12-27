@@ -64,7 +64,7 @@ export class SyncService {
 
       const session: StoredSession = JSON.parse(stored);
 
-      // Check if tokens are expired
+      // Check if credential is expired
       const expiresAt = new Date(session.tokens.expires_at);
       if (expiresAt <= new Date()) {
         localStorage.removeItem(SESSION_STORAGE_KEY);

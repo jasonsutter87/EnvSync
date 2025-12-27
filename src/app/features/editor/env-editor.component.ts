@@ -72,7 +72,7 @@ import type * as monacoType from 'monaco-editor';
         </div>
         <div class="toolbar-group">
           <span class="validation-status" [class.has-errors]="duplicateKeys().length > 0">
-            {{ duplicateKeys().length > 0 ? `${duplicateKeys().length} duplicate key(s)` : 'Valid' }}
+            {{ duplicateKeys().length > 0 ? duplicateKeys().length + ' duplicate key(s)' : 'Valid' }}
           </span>
         </div>
       </div>

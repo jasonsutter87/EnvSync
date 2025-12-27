@@ -4,7 +4,7 @@
 
 use app_lib::crypto::{
     decrypt, decrypt_bytes, derive_key, encrypt, encrypt_bytes, generate_salt, hash_password,
-    verify_password,
+    verify_password, SecureKey,
 };
 use app_lib::error::EnvSyncError;
 
@@ -834,9 +834,11 @@ fn test_password_hash_contains_metadata() {
     let hash = hash_password(password).unwrap();
 
     // Argon2 hash should contain algorithm identifier and parameters
+    // PHC format: $argon2id$v=19$m=19456,t=2,p=1$salt$hash
     assert!(hash.starts_with("$argon2"));
     assert!(hash.contains("$v="));
-    assert!(hash.contains("$m="));
-    assert!(hash.contains("$t="));
-    assert!(hash.contains("$p="));
+    // Parameters are comma-separated after version: m=...,t=...,p=...
+    assert!(hash.contains("m="));
+    assert!(hash.contains("t="));
+    assert!(hash.contains("p="));
 }

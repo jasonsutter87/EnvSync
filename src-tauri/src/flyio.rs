@@ -513,7 +513,7 @@ mod tests {
     #[tokio::test]
     async fn test_empty_secrets_map() {
         let client = FlyioClient::new("test_token".to_string());
-        let secrets = HashMap::new();
+        let secrets: HashMap<String, String> = HashMap::new();
 
         // This should succeed without making an API call
         // Note: This will fail until we have proper mocking, but demonstrates expected behavior

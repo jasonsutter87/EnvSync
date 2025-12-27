@@ -93,8 +93,11 @@ describe('VaultLockComponent', () => {
     });
 
     it('should show confirm password field in setup mode', () => {
-      const label = fixture.nativeElement.querySelector('label:nth-of-type(2)');
-      expect(label.textContent).toContain('Confirm Password');
+      const labels = fixture.nativeElement.querySelectorAll('label');
+      const confirmLabel = Array.from(labels).find((l: any) =>
+        l.textContent?.includes('Confirm Password')
+      );
+      expect(confirmLabel).toBeTruthy();
     });
 
     it('should display "Create Vault" button text in setup mode', () => {

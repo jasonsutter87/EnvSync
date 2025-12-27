@@ -28,6 +28,9 @@ class MockSyncService {
   pendingChanges = signal(0);
   status = signal({ state: 'idle', message: null });
 
+  isLoading = signal(false);
+  login = vi.fn().mockResolvedValue(undefined);
+  signup = vi.fn().mockResolvedValue(undefined);
   sync = vi.fn().mockResolvedValue(undefined);
   logout = vi.fn().mockResolvedValue(undefined);
 }

@@ -3,9 +3,9 @@
 //! Client for VeilCloud zero-knowledge storage and services.
 //! All encryption happens client-side - VeilCloud never sees plaintext.
 //!
-//! Based on VeilCloud API design from the VeilSuite project.
+//! Updated to match actual VeilCloud API from VeilSuite project.
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::RwLock;
@@ -17,14 +17,12 @@ use crate::models::{AuthTokens, EncryptedBlob, StorageEntry, StorageMetadata, Us
 #[derive(Debug, Clone)]
 pub struct VeilCloudConfig {
     pub api_url: String,
-    pub api_key: Option<String>,
 }
 
 impl Default for VeilCloudConfig {
     fn default() -> Self {
         Self {
-            api_url: "https://api.veilcloud.io/v1".to_string(),
-            api_key: None,
+            api_url: "https://api.veilcloud.io".to_string(),
         }
     }
 }
@@ -32,8 +30,13 @@ impl Default for VeilCloudConfig {
 impl VeilCloudConfig {
     pub fn local() -> Self {
         Self {
-            api_url: "http://localhost:8000/v1".to_string(),
-            api_key: None,
+            api_url: "http://localhost:3000".to_string(),
+        }
+    }
+
+    pub fn with_url(url: &str) -> Self {
+        Self {
+            api_url: url.to_string(),
         }
     }
 }
@@ -51,13 +54,12 @@ struct AuthState {
     user: User,
 }
 
-// ========== API Request/Response Types ==========
+// ========== API Request/Response Types (matching VeilCloud API) ==========
 
 #[derive(Debug, Serialize)]
-struct SignupRequest {
+struct RegisterRequest {
     email: String,
     password: String,
-    name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -69,17 +71,23 @@ struct LoginRequest {
 #[derive(Debug, Deserialize)]
 struct AuthResponse {
     user: UserResponse,
-    access_token: String,
-    refresh_token: String,
-    expires_in: i64,
+    credential: Option<CredentialResponse>,
 }
 
 #[derive(Debug, Deserialize)]
 struct UserResponse {
     id: String,
     email: String,
-    name: Option<String>,
-    created_at: DateTime<Utc>,
+    #[serde(rename = "createdAt")]
+    created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CredentialResponse {
+    credential: String,
+    signature: String,
+    #[serde(rename = "expiresAt")]
+    expires_at: DateTime<Utc>,
 }
 
 impl From<UserResponse> for User {
@@ -87,78 +95,72 @@ impl From<UserResponse> for User {
         User {
             id: r.id,
             email: r.email,
-            name: r.name,
-            created_at: r.created_at,
+            name: None,
+            created_at: r.created_at.unwrap_or_else(Utc::now),
         }
     }
 }
 
-#[derive(Debug, Serialize)]
-struct RefreshRequest {
-    refresh_token: String,
-}
-
 #[derive(Debug, Deserialize)]
 struct RefreshResponse {
-    access_token: String,
-    refresh_token: String,
-    expires_in: i64,
+    credential: String,
+    signature: String,
+    #[serde(rename = "expiresAt")]
+    expires_at: DateTime<Utc>,
 }
 
-/// Blob upload request (matches VeilCloud API)
+/// Storage put request (matches VeilCloud /v1/storage API)
 #[derive(Debug, Serialize)]
-pub struct BlobPutRequest {
-    pub key: String,
-    pub data: String,      // Base64 encoded ciphertext
-    pub nonce: String,     // Base64 encoded nonce
-    pub version: u64,
-    pub metadata: Option<BlobMetadataRequest>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct BlobMetadataRequest {
+pub struct StoragePutRequest {
+    pub data: String,           // Base64 encoded encrypted data
+    pub metadata: Option<String>, // Optional encrypted metadata
+    #[serde(rename = "contentType")]
     pub content_type: Option<String>,
-    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct BlobResponse {
-    pub id: String,
+pub struct StoragePutResponse {
+    pub success: bool,
+    pub blob: BlobInfo,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BlobInfo {
     pub key: String,
-    pub version: u64,
+    pub size: u64,
+    pub hash: String,
+    #[serde(rename = "createdAt")]
     pub created_at: DateTime<Utc>,
+    #[serde(rename = "updatedAt")]
     pub updated_at: DateTime<Utc>,
-    pub size_bytes: u64,
-    pub checksum: String,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct BlobGetResponse {
-    pub id: String,
-    pub key: String,
-    pub data: String,      // Base64 encoded ciphertext
-    pub nonce: String,     // Base64 encoded nonce
+pub struct StorageGetResponse {
+    pub data: String,           // Base64 encoded encrypted data
+    pub metadata: Option<String>,
+    #[serde(rename = "contentType")]
+    pub content_type: String,
+    pub size: u64,
     pub version: u64,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub size_bytes: u64,
-    pub checksum: String,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct BlobListResponse {
+pub struct StorageListResponse {
     pub blobs: Vec<BlobListEntry>,
-    pub next_cursor: Option<String>,
+    #[serde(rename = "continuationToken")]
+    pub continuation_token: Option<String>,
+    #[serde(rename = "hasMore")]
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BlobListEntry {
-    pub id: String,
     pub key: String,
-    pub version: u64,
+    pub size: u64,
+    pub hash: String,
+    #[serde(rename = "updatedAt")]
     pub updated_at: DateTime<Utc>,
-    pub size_bytes: u64,
-    pub checksum: String,
 }
 
 impl VeilCloudClient {
@@ -203,17 +205,16 @@ impl VeilCloudClient {
 
     // ========== Authentication ==========
 
-    /// Sign up for a new VeilCloud account
-    pub async fn signup(&self, email: &str, password: &str, name: Option<&str>) -> Result<User> {
-        let request = SignupRequest {
+    /// Register for a new VeilCloud account
+    pub async fn signup(&self, email: &str, password: &str, _name: Option<&str>) -> Result<User> {
+        let request = RegisterRequest {
             email: email.to_string(),
             password: password.to_string(),
-            name: name.map(String::from),
         };
 
         let response = self
             .http
-            .post(format!("{}/auth/signup", self.config.api_url))
+            .post(format!("{}/v1/auth/register", self.config.api_url))
             .json(&request)
             .send()
             .await
@@ -222,7 +223,7 @@ impl VeilCloudClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(Error::Api(format!("Signup failed ({}): {}", status, body)));
+            return Err(Error::Api(format!("Register failed ({}): {}", status, body)));
         }
 
         let auth: AuthResponse = response
@@ -231,16 +232,20 @@ impl VeilCloudClient {
             .map_err(|e| Error::Api(format!("Invalid response: {}", e)))?;
 
         let user: User = auth.user.into();
-        let tokens = AuthTokens {
-            access_token: auth.access_token,
-            refresh_token: auth.refresh_token,
-            expires_at: Utc::now() + Duration::seconds(auth.expires_in),
-        };
 
-        *self.auth.write().unwrap() = Some(AuthState {
-            tokens,
-            user: user.clone(),
-        });
+        // Store auth state if credential was returned
+        if let Some(cred) = auth.credential {
+            let tokens = AuthTokens {
+                credential: cred.credential,
+                signature: cred.signature,
+                expires_at: cred.expires_at,
+            };
+
+            *self.auth.write().unwrap() = Some(AuthState {
+                tokens,
+                user: user.clone(),
+            });
+        }
 
         Ok(user)
     }
@@ -254,7 +259,7 @@ impl VeilCloudClient {
 
         let response = self
             .http
-            .post(format!("{}/auth/login", self.config.api_url))
+            .post(format!("{}/v1/auth/login", self.config.api_url))
             .json(&request)
             .send()
             .await
@@ -272,16 +277,20 @@ impl VeilCloudClient {
             .map_err(|e| Error::Api(format!("Invalid response: {}", e)))?;
 
         let user: User = auth.user.into();
-        let tokens = AuthTokens {
-            access_token: auth.access_token,
-            refresh_token: auth.refresh_token,
-            expires_at: Utc::now() + Duration::seconds(auth.expires_in),
-        };
 
-        *self.auth.write().unwrap() = Some(AuthState {
-            tokens,
-            user: user.clone(),
-        });
+        // Store auth state if credential was returned
+        if let Some(cred) = auth.credential {
+            let tokens = AuthTokens {
+                credential: cred.credential,
+                signature: cred.signature,
+                expires_at: cred.expires_at,
+            };
+
+            *self.auth.write().unwrap() = Some(AuthState {
+                tokens,
+                user: user.clone(),
+            });
+        }
 
         Ok(user)
     }
@@ -291,22 +300,15 @@ impl VeilCloudClient {
         self.clear_session();
     }
 
-    /// Refresh the access token
-    pub async fn refresh_token(&self) -> Result<()> {
-        let refresh_token = {
-            let auth = self.auth.read().unwrap();
-            match &*auth {
-                Some(state) => state.tokens.refresh_token.clone(),
-                None => return Err(Error::NotAuthenticated),
-            }
-        };
-
-        let request = RefreshRequest { refresh_token };
+    /// Refresh the credential
+    pub async fn refresh_credential(&self) -> Result<()> {
+        let auth_headers = self.get_auth_headers()?;
 
         let response = self
             .http
-            .post(format!("{}/auth/refresh", self.config.api_url))
-            .json(&request)
+            .post(format!("{}/v1/auth/refresh", self.config.api_url))
+            .header("X-VeilCloud-Credential", &auth_headers.0)
+            .header("X-VeilCloud-Signature", &auth_headers.1)
             .send()
             .await
             .map_err(|e| Error::Network(e.to_string()))?;
@@ -323,48 +325,75 @@ impl VeilCloudClient {
 
         let mut auth = self.auth.write().unwrap();
         if let Some(state) = auth.as_mut() {
-            state.tokens.access_token = refresh.access_token;
-            state.tokens.refresh_token = refresh.refresh_token;
-            state.tokens.expires_at = Utc::now() + Duration::seconds(refresh.expires_in);
+            state.tokens.credential = refresh.credential;
+            state.tokens.signature = refresh.signature;
+            state.tokens.expires_at = refresh.expires_at;
         }
 
         Ok(())
     }
 
-    /// Get authorization header, refreshing token if needed
-    async fn get_auth_header(&self) -> Result<String> {
+    /// Get auth headers, refreshing if needed
+    fn get_auth_headers(&self) -> Result<(String, String)> {
+        let auth = self.auth.read().unwrap();
+        match &*auth {
+            Some(state) => Ok((state.tokens.credential.clone(), state.tokens.signature.clone())),
+            None => Err(Error::NotAuthenticated),
+        }
+    }
+
+    /// Get auth headers, refreshing credential if near expiry
+    async fn get_auth_headers_with_refresh(&self) -> Result<(String, String)> {
         {
             let auth = self.auth.read().unwrap();
             match &*auth {
                 Some(state) => {
-                    if state.tokens.expires_at > Utc::now() + Duration::minutes(5) {
-                        return Ok(format!("Bearer {}", state.tokens.access_token));
+                    if !state.tokens.is_near_expiry() {
+                        return Ok((state.tokens.credential.clone(), state.tokens.signature.clone()));
                     }
                 }
                 None => return Err(Error::NotAuthenticated),
             }
         }
 
-        self.refresh_token().await?;
+        // Refresh needed
+        self.refresh_credential().await?;
 
         let auth = self.auth.read().unwrap();
         match &*auth {
-            Some(state) => Ok(format!("Bearer {}", state.tokens.access_token)),
+            Some(state) => Ok((state.tokens.credential.clone(), state.tokens.signature.clone())),
             None => Err(Error::NotAuthenticated),
         }
     }
 
-    // ========== Blob Storage (ZK Storage) ==========
-    // Based on VeilCloud API: POST /v1/blobs, GET /v1/blobs/:id, etc.
+    // ========== Storage API (/v1/storage/:projectId/:envName) ==========
 
-    /// Upload an encrypted blob
-    pub async fn blob_put(&self, request: BlobPutRequest) -> Result<BlobResponse> {
-        let auth_header = self.get_auth_header().await?;
+    /// Store encrypted data for a project/environment
+    pub async fn storage_put(
+        &self,
+        project_id: &str,
+        env_name: &str,
+        data: &str,
+        metadata: Option<&str>,
+    ) -> Result<BlobInfo> {
+        let (cred, sig) = self.get_auth_headers_with_refresh().await?;
+
+        let request = StoragePutRequest {
+            data: data.to_string(),
+            metadata: metadata.map(String::from),
+            content_type: Some("application/octet-stream".to_string()),
+        };
 
         let response = self
             .http
-            .post(format!("{}/blobs", self.config.api_url))
-            .header("Authorization", auth_header)
+            .put(format!(
+                "{}/v1/storage/{}/{}",
+                self.config.api_url,
+                urlencoding::encode(project_id),
+                urlencoding::encode(env_name)
+            ))
+            .header("X-VeilCloud-Credential", cred)
+            .header("X-VeilCloud-Signature", sig)
             .json(&request)
             .send()
             .await
@@ -373,35 +402,46 @@ impl VeilCloudClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(Error::Api(format!("Blob put failed ({}): {}", status, body)));
+            return Err(Error::Api(format!("Storage put failed ({}): {}", status, body)));
         }
 
-        response
+        let result: StoragePutResponse = response
             .json()
             .await
-            .map_err(|e| Error::Api(format!("Invalid response: {}", e)))
+            .map_err(|e| Error::Api(format!("Invalid response: {}", e)))?;
+
+        Ok(result.blob)
     }
 
-    /// Get an encrypted blob by key
-    pub async fn blob_get(&self, key: &str) -> Result<BlobGetResponse> {
-        let auth_header = self.get_auth_header().await?;
+    /// Get encrypted data for a project/environment
+    pub async fn storage_get(&self, project_id: &str, env_name: &str) -> Result<StorageGetResponse> {
+        let (cred, sig) = self.get_auth_headers_with_refresh().await?;
 
         let response = self
             .http
-            .get(format!("{}/blobs/{}", self.config.api_url, urlencoding::encode(key)))
-            .header("Authorization", auth_header)
+            .get(format!(
+                "{}/v1/storage/{}/{}",
+                self.config.api_url,
+                urlencoding::encode(project_id),
+                urlencoding::encode(env_name)
+            ))
+            .header("X-VeilCloud-Credential", cred)
+            .header("X-VeilCloud-Signature", sig)
             .send()
             .await
             .map_err(|e| Error::Network(e.to_string()))?;
 
         if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(Error::NotFound(format!("Blob not found: {}", key)));
+            return Err(Error::NotFound(format!(
+                "Blob not found: {}/{}",
+                project_id, env_name
+            )));
         }
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(Error::Api(format!("Blob get failed ({}): {}", status, body)));
+            return Err(Error::Api(format!("Storage get failed ({}): {}", status, body)));
         }
 
         response
@@ -410,14 +450,20 @@ impl VeilCloudClient {
             .map_err(|e| Error::Api(format!("Invalid response: {}", e)))
     }
 
-    /// Delete a blob
-    pub async fn blob_delete(&self, key: &str) -> Result<()> {
-        let auth_header = self.get_auth_header().await?;
+    /// Delete encrypted data for a project/environment
+    pub async fn storage_delete(&self, project_id: &str, env_name: &str) -> Result<()> {
+        let (cred, sig) = self.get_auth_headers_with_refresh().await?;
 
         let response = self
             .http
-            .delete(format!("{}/blobs/{}", self.config.api_url, urlencoding::encode(key)))
-            .header("Authorization", auth_header)
+            .delete(format!(
+                "{}/v1/storage/{}/{}",
+                self.config.api_url,
+                urlencoding::encode(project_id),
+                urlencoding::encode(env_name)
+            ))
+            .header("X-VeilCloud-Credential", cred)
+            .header("X-VeilCloud-Signature", sig)
             .send()
             .await
             .map_err(|e| Error::Network(e.to_string()))?;
@@ -425,37 +471,34 @@ impl VeilCloudClient {
         if !response.status().is_success() && response.status() != reqwest::StatusCode::NOT_FOUND {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(Error::Api(format!("Blob delete failed ({}): {}", status, body)));
+            return Err(Error::Api(format!("Storage delete failed ({}): {}", status, body)));
         }
 
         Ok(())
     }
 
-    /// List blobs with optional prefix filter
-    pub async fn blob_list(&self, prefix: Option<&str>) -> Result<Vec<BlobListEntry>> {
-        let auth_header = self.get_auth_header().await?;
+    /// List all blobs for a project
+    pub async fn storage_list(&self, project_id: &str) -> Result<Vec<BlobListEntry>> {
+        let (cred, sig) = self.get_auth_headers_with_refresh().await?;
         let mut all_blobs = Vec::new();
-        let mut cursor: Option<String> = None;
+        let mut continuation_token: Option<String> = None;
 
         loop {
-            let mut url = format!("{}/blobs", self.config.api_url);
-            let mut params = Vec::new();
+            let mut url = format!(
+                "{}/v1/storage/{}",
+                self.config.api_url,
+                urlencoding::encode(project_id)
+            );
 
-            if let Some(p) = prefix {
-                params.push(format!("prefix={}", urlencoding::encode(p)));
-            }
-            if let Some(c) = &cursor {
-                params.push(format!("cursor={}", urlencoding::encode(c)));
-            }
-            if !params.is_empty() {
-                url.push('?');
-                url.push_str(&params.join("&"));
+            if let Some(token) = &continuation_token {
+                url.push_str(&format!("?continuationToken={}", urlencoding::encode(token)));
             }
 
             let response = self
                 .http
                 .get(&url)
-                .header("Authorization", &auth_header)
+                .header("X-VeilCloud-Credential", &cred)
+                .header("X-VeilCloud-Signature", &sig)
                 .send()
                 .await
                 .map_err(|e| Error::Network(e.to_string()))?;
@@ -463,33 +506,40 @@ impl VeilCloudClient {
             if !response.status().is_success() {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
-                return Err(Error::Api(format!("Blob list failed ({}): {}", status, body)));
+                return Err(Error::Api(format!("Storage list failed ({}): {}", status, body)));
             }
 
-            let list: BlobListResponse = response
+            let list: StorageListResponse = response
                 .json()
                 .await
                 .map_err(|e| Error::Api(format!("Invalid response: {}", e)))?;
 
             all_blobs.extend(list.blobs);
 
-            match list.next_cursor {
-                Some(c) => cursor = Some(c),
-                None => break,
+            if list.has_more {
+                continuation_token = list.continuation_token;
+            } else {
+                break;
             }
         }
 
         Ok(all_blobs)
     }
 
-    /// Check if a blob exists and get its version
-    pub async fn blob_head(&self, key: &str) -> Result<Option<BlobListEntry>> {
-        let auth_header = self.get_auth_header().await?;
+    /// Check if blob exists and get metadata
+    pub async fn storage_head(&self, project_id: &str, env_name: &str) -> Result<Option<BlobListEntry>> {
+        let (cred, sig) = self.get_auth_headers_with_refresh().await?;
 
         let response = self
             .http
-            .head(format!("{}/blobs/{}", self.config.api_url, urlencoding::encode(key)))
-            .header("Authorization", auth_header)
+            .head(format!(
+                "{}/v1/storage/{}/{}",
+                self.config.api_url,
+                urlencoding::encode(project_id),
+                urlencoding::encode(env_name)
+            ))
+            .header("X-VeilCloud-Credential", cred)
+            .header("X-VeilCloud-Signature", sig)
             .send()
             .await
             .map_err(|e| Error::Network(e.to_string()))?;
@@ -500,82 +550,55 @@ impl VeilCloudClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            return Err(Error::Api(format!("Blob head failed: {}", status)));
+            return Err(Error::Api(format!("Storage head failed: {}", status)));
         }
 
         // Parse metadata from headers
         let entry = BlobListEntry {
-            id: response
+            key: format!("{}/{}", project_id, env_name),
+            size: response
                 .headers()
-                .get("x-blob-id")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_string(),
-            key: key.to_string(),
-            version: response
-                .headers()
-                .get("x-blob-version")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(1),
-            updated_at: response
-                .headers()
-                .get("x-updated-at")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(Utc::now),
-            size_bytes: response
-                .headers()
-                .get("content-length")
+                .get("X-VeilCloud-Size")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0),
-            checksum: response
+            hash: response
                 .headers()
-                .get("x-checksum")
+                .get("X-VeilCloud-Hash")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
                 .to_string(),
+            updated_at: Utc::now(),
         };
 
         Ok(Some(entry))
     }
 
-    /// Get blob version history
-    pub async fn blob_versions(&self, key: &str) -> Result<Vec<BlobListEntry>> {
-        let auth_header = self.get_auth_header().await?;
-
+    /// Health check
+    pub async fn health(&self) -> Result<HealthResponse> {
         let response = self
             .http
-            .get(format!("{}/blobs/{}/versions", self.config.api_url, urlencoding::encode(key)))
-            .header("Authorization", auth_header)
+            .get(format!("{}/health", self.config.api_url))
             .send()
             .await
             .map_err(|e| Error::Network(e.to_string()))?;
 
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(Error::NotFound(format!("Blob not found: {}", key)));
-        }
-
         if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(Error::Api(format!("Blob versions failed ({}): {}", status, body)));
+            return Err(Error::Api("Health check failed".to_string()));
         }
 
-        #[derive(Deserialize)]
-        struct VersionsResponse {
-            versions: Vec<BlobListEntry>,
-        }
-
-        let resp: VersionsResponse = response
+        response
             .json()
             .await
-            .map_err(|e| Error::Api(format!("Invalid response: {}", e)))?;
-
-        Ok(resp.versions)
+            .map_err(|e| Error::Api(format!("Invalid response: {}", e)))
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HealthResponse {
+    pub status: String,
+    pub service: String,
+    pub version: String,
 }
 
 impl Default for VeilCloudClient {
@@ -586,20 +609,20 @@ impl Default for VeilCloudClient {
 
 // ========== Helper: Convert to internal types ==========
 
-impl From<BlobGetResponse> for StorageEntry {
-    fn from(r: BlobGetResponse) -> Self {
+impl From<StorageGetResponse> for StorageEntry {
+    fn from(r: StorageGetResponse) -> Self {
         StorageEntry {
-            key: r.key,
+            key: String::new(), // Key is derived from project/env
             blob: EncryptedBlob {
                 ciphertext: r.data,
-                nonce: r.nonce,
+                nonce: r.metadata.unwrap_or_default(), // Nonce stored in metadata
                 version: r.version,
             },
             metadata: StorageMetadata {
-                created_at: r.created_at,
-                updated_at: r.updated_at,
-                size_bytes: r.size_bytes,
-                checksum: r.checksum,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                size_bytes: r.size,
+                checksum: String::new(),
             },
         }
     }
@@ -619,7 +642,7 @@ mod tests {
     #[test]
     fn test_local_config() {
         let config = VeilCloudConfig::local();
-        assert_eq!(config.api_url, "http://localhost:8000/v1");
+        assert_eq!(config.api_url, "http://localhost:3000");
     }
 
     #[test]
@@ -627,9 +650,9 @@ mod tests {
         let client = VeilCloudClient::new();
 
         let tokens = AuthTokens {
-            access_token: "test_access".to_string(),
-            refresh_token: "test_refresh".to_string(),
-            expires_at: Utc::now() + Duration::hours(1),
+            credential: "test_credential".to_string(),
+            signature: "test_signature".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
         };
 
         let user = User {
@@ -643,5 +666,22 @@ mod tests {
 
         assert!(client.is_authenticated());
         assert_eq!(client.current_user().unwrap().email, "test@example.com");
+    }
+
+    #[test]
+    fn test_token_expiry() {
+        let tokens = AuthTokens {
+            credential: "test".to_string(),
+            signature: "test".to_string(),
+            expires_at: Utc::now() - chrono::Duration::hours(1),
+        };
+        assert!(tokens.is_expired());
+
+        let valid_tokens = AuthTokens {
+            credential: "test".to_string(),
+            signature: "test".to_string(),
+            expires_at: Utc::now() + chrono::Duration::hours(1),
+        };
+        assert!(!valid_tokens.is_expired());
     }
 }

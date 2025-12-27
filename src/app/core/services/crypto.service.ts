@@ -60,7 +60,7 @@ export class CryptoService {
     return crypto.subtle.deriveKey(
       {
         name: 'PBKDF2',
-        salt: salt,
+        salt: salt.buffer as ArrayBuffer,
         iterations: 100000,
         hash: 'SHA-256',
       },
@@ -117,10 +117,10 @@ export class CryptoService {
       const plaintext = await crypto.subtle.decrypt(
         {
           name: 'AES-GCM',
-          iv: nonce,
+          iv: nonce.buffer as ArrayBuffer,
         },
         this.masterKey,
-        ciphertext
+        ciphertext.buffer as ArrayBuffer
       );
 
       return new TextDecoder().decode(plaintext);

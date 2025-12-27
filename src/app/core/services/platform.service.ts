@@ -79,9 +79,9 @@ export class PlatformService {
 
     // Web mode: vault status based on auth and crypto
     return {
-      initialized: this.apiService.isAuthenticated(),
-      locked: !this.cryptoService.isInitialized(),
-      lastActivity: Date.now(),
+      is_initialized: this.apiService.isAuthenticated(),
+      is_unlocked: this.cryptoService.isInitialized(),
+      last_activity: new Date().toISOString(),
     };
   }
 

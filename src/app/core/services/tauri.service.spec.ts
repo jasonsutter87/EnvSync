@@ -175,7 +175,7 @@ describe('TauriService', () => {
     it('should handle vault initialization errors', async () => {
       mockInvoke.mockRejectedValue(new Error('Vault already initialized'));
 
-      await expectAsync(service.initializeVault('password')).toBeRejectedWithError(
+      await expect(service.initializeVault('password')).rejects.toThrow(
         'Vault already initialized'
       );
     });
@@ -183,7 +183,7 @@ describe('TauriService', () => {
     it('should handle unlock errors', async () => {
       mockInvoke.mockRejectedValue(new Error('Invalid password'));
 
-      await expectAsync(service.unlockVault('wrong')).toBeRejectedWithError('Invalid password');
+      await expect(service.unlockVault('wrong')).rejects.toThrow('Invalid password');
     });
   });
 
@@ -256,7 +256,7 @@ describe('TauriService', () => {
     it('should handle project creation errors', async () => {
       mockInvoke.mockRejectedValue(new Error('Project name already exists'));
 
-      await expectAsync(service.createProject('Duplicate')).toBeRejectedWithError(
+      await expect(service.createProject('Duplicate')).rejects.toThrow(
         'Project name already exists'
       );
     });
@@ -264,7 +264,7 @@ describe('TauriService', () => {
     it('should handle project not found errors', async () => {
       mockInvoke.mockRejectedValue(new Error('Project not found'));
 
-      await expectAsync(service.getProject('non-existent')).toBeRejectedWithError(
+      await expect(service.getProject('non-existent')).rejects.toThrow(
         'Project not found'
       );
     });
@@ -1032,13 +1032,13 @@ describe('TauriService', () => {
     it('should propagate Tauri IPC errors', async () => {
       mockInvoke.mockRejectedValue(new Error('Tauri IPC error'));
 
-      await expectAsync(service.getVaultStatus()).toBeRejectedWithError('Tauri IPC error');
+      await expect(service.getVaultStatus()).rejects.toThrow('Tauri IPC error');
     });
 
     it('should handle authentication errors', async () => {
       mockInvoke.mockRejectedValue(new Error('Invalid credentials'));
 
-      await expectAsync(service.syncLogin('test@example.com', 'wrong')).toBeRejectedWithError(
+      await expect(service.syncLogin('test@example.com', 'wrong')).rejects.toThrow(
         'Invalid credentials'
       );
     });
@@ -1046,7 +1046,7 @@ describe('TauriService', () => {
     it('should handle resource not found errors', async () => {
       mockInvoke.mockRejectedValue(new Error('Project not found'));
 
-      await expectAsync(service.getProject('non-existent')).toBeRejectedWithError(
+      await expect(service.getProject('non-existent')).rejects.toThrow(
         'Project not found'
       );
     });

@@ -549,8 +549,8 @@ fn test_audit_event_new_generates_hash() {
         None,
     );
 
-    // Hash should be MD5 hex string (32 characters)
-    assert_eq!(event.hash.len(), 32);
+    // Hash should be SHA-256 hex string (64 characters)
+    assert_eq!(event.hash.len(), 64);
 }
 
 #[test]
@@ -645,8 +645,8 @@ fn test_audit_event_with_previous_hash() {
     ).with_previous_hash("abcd1234".to_string());
 
     assert_eq!(event.previous_hash, Some("abcd1234".to_string()));
-    // Hash should be recalculated with previous hash included
-    assert_eq!(event.hash.len(), 32);
+    // Hash should be recalculated with previous hash included (SHA-256 = 64 chars)
+    assert_eq!(event.hash.len(), 64);
 }
 
 #[test]

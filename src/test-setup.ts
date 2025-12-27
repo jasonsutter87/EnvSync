@@ -5,9 +5,24 @@
  * It sets up JSDOM, mocks for Tauri APIs, and common test utilities.
  */
 
-import { vi } from 'vitest';
+import { vi, beforeEach, afterEach, afterAll } from 'vitest';
 import 'zone.js';
 import 'zone.js/testing';
+import { getTestBed, TestBed } from '@angular/core/testing';
+import {
+  BrowserDynamicTestingModule,
+  platformBrowserDynamicTesting,
+} from '@angular/platform-browser-dynamic/testing';
+
+// Initialize Angular testing environment only once
+const testBed = getTestBed();
+if (!testBed.platform) {
+  testBed.initTestEnvironment(
+    BrowserDynamicTestingModule,
+    platformBrowserDynamicTesting(),
+    { teardown: { destroyAfterEach: true } }
+  );
+}
 
 // Mock window.matchMedia for components using media queries
 Object.defineProperty(window, 'matchMedia', {
@@ -25,14 +40,14 @@ Object.defineProperty(window, 'matchMedia', {
 });
 
 // Mock ResizeObserver
-global.ResizeObserver = vi.fn().mockImplementation(() => ({
+(globalThis as any).ResizeObserver = vi.fn().mockImplementation(() => ({
   observe: vi.fn(),
   unobserve: vi.fn(),
   disconnect: vi.fn(),
 }));
 
 // Mock IntersectionObserver
-global.IntersectionObserver = vi.fn().mockImplementation(() => ({
+(globalThis as any).IntersectionObserver = vi.fn().mockImplementation(() => ({
   observe: vi.fn(),
   unobserve: vi.fn(),
   disconnect: vi.fn(),
@@ -101,6 +116,14 @@ const sessionStorageMock = (() => {
 Object.defineProperty(window, 'sessionStorage', { value: sessionStorageMock });
 
 // Mock crypto API for encryption testing
+// Create a fake CryptoKey object
+const mockCryptoKey = {
+  algorithm: { name: 'AES-GCM', length: 256 },
+  extractable: false,
+  type: 'secret' as KeyType,
+  usages: ['encrypt', 'decrypt'] as KeyUsage[],
+};
+
 const mockCrypto = {
   getRandomValues: vi.fn((array: Uint8Array) => {
     for (let i = 0; i < array.length; i++) {
@@ -109,16 +132,25 @@ const mockCrypto = {
     return array;
   }),
   subtle: {
-    generateKey: vi.fn(),
-    encrypt: vi.fn(),
-    decrypt: vi.fn(),
-    deriveKey: vi.fn(),
-    deriveBits: vi.fn(),
-    importKey: vi.fn(),
-    exportKey: vi.fn(),
-    digest: vi.fn(),
-    sign: vi.fn(),
-    verify: vi.fn(),
+    generateKey: vi.fn().mockResolvedValue(mockCryptoKey),
+    encrypt: vi.fn().mockImplementation(async (_algorithm: any, _key: any, data: ArrayBuffer) => {
+      // Return encrypted data (just pass through for mock)
+      return new Uint8Array(data).buffer;
+    }),
+    decrypt: vi.fn().mockImplementation(async (_algorithm: any, _key: any, data: ArrayBuffer) => {
+      // Return decrypted data (just pass through for mock)
+      return new Uint8Array(data).buffer;
+    }),
+    deriveKey: vi.fn().mockResolvedValue(mockCryptoKey),
+    deriveBits: vi.fn().mockResolvedValue(new ArrayBuffer(32)),
+    importKey: vi.fn().mockResolvedValue(mockCryptoKey),
+    exportKey: vi.fn().mockResolvedValue(new ArrayBuffer(32)),
+    digest: vi.fn().mockImplementation(async (_algorithm: string, data: ArrayBuffer) => {
+      // Return a mock hash
+      return new Uint8Array(32).buffer;
+    }),
+    sign: vi.fn().mockResolvedValue(new ArrayBuffer(64)),
+    verify: vi.fn().mockResolvedValue(true),
   },
   randomUUID: vi.fn(() => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
     const r = Math.random() * 16 | 0;
@@ -127,7 +159,7 @@ const mockCrypto = {
   })),
 };
 Object.defineProperty(window, 'crypto', { value: mockCrypto });
-Object.defineProperty(global, 'crypto', { value: mockCrypto });
+Object.defineProperty(globalThis, 'crypto', { value: mockCrypto });
 
 // Export mocks for test access
 export const mocks = {
@@ -137,10 +169,12 @@ export const mocks = {
   localStorage: localStorageMock,
   sessionStorage: sessionStorageMock,
   crypto: mockCrypto,
+  cryptoKey: mockCryptoKey,
 };
 
-// Reset mocks before each test
+// Reset mocks and TestBed before each test
 beforeEach(() => {
+  TestBed.resetTestingModule();
   vi.clearAllMocks();
   localStorageMock.clear();
   sessionStorageMock.clear();

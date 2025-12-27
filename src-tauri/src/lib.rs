@@ -7,19 +7,21 @@ pub mod error;
 pub mod flyio;
 pub mod github;
 pub mod models;
-mod netlify;
-mod railway;
-mod sync;
-mod veilcloud;
-mod veilkey;
-mod vercel;
+pub mod netlify;
+mod rate_limit;
+pub mod railway;
+pub mod sync;
+pub mod veilcloud;
+pub mod veilkey;
+pub mod vercel;
 
 use std::sync::Arc;
 use tauri::Manager;
 
 use audit::AuditLogger;
-use commands::{AuditState, DbState, SyncState};
+use commands::{AuditState, DbState, RateLimitState, SyncState};
 use db::Database;
+use rate_limit::RateLimiter;
 use sync::SyncEngine;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -55,10 +57,14 @@ pub fn run() {
             // Initialize audit logger
             let audit = Arc::new(AuditLogger::new(Arc::clone(&db)));
 
-            // Make database, sync engine, and audit logger available to all commands
+            // Initialize rate limiter for brute force protection
+            let rate_limiter = Arc::new(RateLimiter::new());
+
+            // Make database, sync engine, audit logger, and rate limiter available to all commands
             app.manage(db as DbState);
             app.manage(sync as SyncState);
             app.manage(audit as AuditState);
+            app.manage(rate_limiter as RateLimitState);
 
             Ok(())
         })

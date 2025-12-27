@@ -166,12 +166,27 @@ pub struct User {
     pub created_at: DateTime<Utc>,
 }
 
-/// Authentication tokens from VeilCloud
+/// VeilSign credential-based authentication from VeilCloud
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthTokens {
-    pub access_token: String,
-    pub refresh_token: String,
+    /// VeilSign credential (base64)
+    pub credential: String,
+    /// VeilSign signature (base64)
+    pub signature: String,
+    /// When the credential expires
     pub expires_at: DateTime<Utc>,
+}
+
+impl AuthTokens {
+    /// Check if the credential is expired
+    pub fn is_expired(&self) -> bool {
+        Utc::now() >= self.expires_at
+    }
+
+    /// Check if the credential is near expiry (within 5 minutes)
+    pub fn is_near_expiry(&self) -> bool {
+        Utc::now() + chrono::Duration::minutes(5) >= self.expires_at
+    }
 }
 
 /// Current sync status
@@ -714,7 +729,11 @@ impl AuditEvent {
             actor_id,
             timestamp.to_rfc3339()
         );
-        let hash = format!("{:x}", md5::compute(hash_input.as_bytes()));
+        // Use SHA-256 instead of MD5 for cryptographic security
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(hash_input.as_bytes());
+        let hash = format!("{:x}", hasher.finalize());
 
         Self {
             id,
@@ -780,7 +799,11 @@ impl AuditEvent {
             self.previous_hash.as_deref().unwrap_or("genesis"),
             self.timestamp.to_rfc3339()
         );
-        self.hash = format!("{:x}", md5::compute(hash_input.as_bytes()));
+        // Use SHA-256 instead of MD5 for cryptographic security
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(hash_input.as_bytes());
+        self.hash = format!("{:x}", hasher.finalize());
     }
 }
 

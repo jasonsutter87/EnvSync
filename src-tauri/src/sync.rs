@@ -2,6 +2,8 @@
 //!
 //! Handles synchronization between local SQLite storage and VeilCloud.
 //! All data is encrypted client-side before being sent to the cloud.
+//!
+//! Updated to use VeilCloud's /v1/storage/:projectId/:envName API.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::Utc;
@@ -15,12 +17,10 @@ use crate::models::{
     AuthTokens, ConflictInfo, ConflictResolution, EncryptedBlob, Project, SyncEvent,
     SyncEventType, SyncState, SyncStatus, User,
 };
-use crate::veilcloud::{BlobListEntry, BlobPutRequest, VeilCloudClient, VeilCloudConfig};
+use crate::veilcloud::{BlobListEntry, VeilCloudClient, VeilCloudConfig};
 
-/// Storage key prefixes for VeilCloud
-const PREFIX_PROJECTS: &str = "envsync/projects";
-const PREFIX_ENVS: &str = "envsync/environments";
-const PREFIX_VARS: &str = "envsync/variables";
+/// Environment name used for storing full project data in VeilCloud
+const SYNC_ENV_NAME: &str = "_sync";
 
 /// Sync engine manages synchronization between local and cloud storage
 pub struct SyncEngine {
@@ -230,24 +230,25 @@ impl SyncEngine {
             // Encrypt the data
             let encrypted = self.encrypt_data(key, &project_data)?;
 
-            // Upload to VeilCloud
-            let blob_key = format!("{}/{}", PREFIX_PROJECTS, project.id);
-            let request = BlobPutRequest {
-                key: blob_key.clone(),
-                data: encrypted.ciphertext,
-                nonce: encrypted.nonce,
-                version: sync_meta.local_version,
-                metadata: None,
-            };
-
-            match self.cloud.blob_put(request).await {
-                Ok(response) => {
+            // Upload to VeilCloud using new API: PUT /v1/storage/:projectId/:envName
+            // We store nonce in metadata field
+            match self
+                .cloud
+                .storage_put(
+                    &project.id,
+                    SYNC_ENV_NAME,
+                    &encrypted.ciphertext,
+                    Some(&encrypted.nonce),
+                )
+                .await
+            {
+                Ok(blob_info) => {
                     // Update sync metadata
                     self.db.update_sync_metadata(
                         &project.id,
-                        Some(&response.id),
+                        Some(&blob_info.key),
                         sync_meta.local_version,
-                        Some(response.version),
+                        Some(sync_meta.local_version), // Use local version as remote version
                         false,
                     )?;
 
@@ -271,39 +272,49 @@ impl SyncEngine {
     }
 
     /// Pull remote changes from cloud
+    ///
+    /// Currently pulls changes for projects that exist locally.
+    /// TODO: Add discovery of new remote projects via VeilCloud projects API.
     async fn pull_changes(&self, key: &[u8]) -> Result<(u32, u32)> {
-        let remote_blobs = self.cloud.blob_list(Some(PREFIX_PROJECTS)).await?;
+        let local_projects = self.db.get_projects()?;
         let mut pulled = 0;
         let mut conflicts = 0;
 
-        for blob_entry in remote_blobs {
-            let project_id = blob_entry
-                .key
-                .strip_prefix(&format!("{}/", PREFIX_PROJECTS))
-                .unwrap_or(&blob_entry.key)
-                .to_string();
+        for project in local_projects {
+            // Check if project has sync enabled
+            let sync_meta = match self.db.get_sync_metadata(&project.id) {
+                Ok(meta) => meta,
+                Err(_) => continue, // No sync metadata, skip
+            };
 
-            // Check if we have this project locally
-            let local_meta = self.db.get_sync_metadata(&project_id);
+            if !sync_meta.sync_enabled {
+                continue;
+            }
 
-            match local_meta {
-                Ok(meta) => {
-                    // We have it locally - check for conflicts
-                    if meta.is_dirty && meta.remote_version != Some(blob_entry.version) {
-                        // Conflict: both local and remote have changes
-                        self.handle_conflict(&project_id, &blob_entry, key).await?;
-                        conflicts += 1;
-                    } else if meta.remote_version != Some(blob_entry.version) {
-                        // Remote is newer, pull it
-                        self.pull_project(&project_id, &blob_entry, key).await?;
-                        pulled += 1;
-                    }
+            // Check if remote blob exists using HEAD request
+            let remote_entry = match self.cloud.storage_head(&project.id, SYNC_ENV_NAME).await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => continue, // Remote doesn't exist, nothing to pull
+                Err(e) => {
+                    log::warn!("Failed to check remote for project {}: {}", project.id, e);
+                    continue;
                 }
-                Err(_) => {
-                    // New remote project, pull it
-                    self.pull_project(&project_id, &blob_entry, key).await?;
-                    pulled += 1;
+            };
+
+            // Compare with local state
+            if sync_meta.is_dirty {
+                // We have local changes - check for conflict
+                // Use hash comparison to detect if remote changed
+                if sync_meta.remote_id.as_deref() != Some(&remote_entry.hash) {
+                    // Conflict: both local and remote have changes
+                    self.handle_conflict(&project.id, &remote_entry, key).await?;
+                    conflicts += 1;
                 }
+                // If remote hash matches, our push will handle it
+            } else if sync_meta.remote_id.as_deref() != Some(&remote_entry.hash) {
+                // Remote is newer, pull it
+                self.pull_project(&project.id, key).await?;
+                pulled += 1;
             }
         }
 
@@ -311,20 +322,16 @@ impl SyncEngine {
     }
 
     /// Pull a single project from remote
-    async fn pull_project(
-        &self,
-        project_id: &str,
-        blob_entry: &BlobListEntry,
-        key: &[u8],
-    ) -> Result<()> {
-        let blob = self.cloud.blob_get(&blob_entry.key).await?;
+    async fn pull_project(&self, project_id: &str, key: &[u8]) -> Result<()> {
+        // Get the blob from VeilCloud storage
+        let blob = self.cloud.storage_get(project_id, SYNC_ENV_NAME).await?;
 
-        // Decrypt the data
+        // Decrypt the data (nonce is stored in metadata field)
         let decrypted = self.decrypt_data(
             key,
             &EncryptedBlob {
                 ciphertext: blob.data,
-                nonce: blob.nonce,
+                nonce: blob.metadata.unwrap_or_default(),
                 version: blob.version,
             },
         )?;
@@ -332,10 +339,11 @@ impl SyncEngine {
         // Deserialize and import
         self.import_project_data(project_id, &decrypted)?;
 
-        // Update sync metadata
+        // Update sync metadata with the hash as remote_id for change detection
+        let checksum = self.compute_checksum(decrypted.as_bytes());
         self.db.update_sync_metadata(
             project_id,
-            Some(&blob.id),
+            Some(&checksum),
             blob.version,
             Some(blob.version),
             false,
@@ -362,13 +370,13 @@ impl SyncEngine {
         // Get local data
         let local_data = self.serialize_project(project_id)?;
 
-        // Get remote data
-        let remote_blob = self.cloud.blob_get(&remote_entry.key).await?;
+        // Get remote data from VeilCloud storage
+        let remote_blob = self.cloud.storage_get(project_id, SYNC_ENV_NAME).await?;
         let remote_decrypted = self.decrypt_data(
             key,
             &EncryptedBlob {
                 ciphertext: remote_blob.data,
-                nonce: remote_blob.nonce,
+                nonce: remote_blob.metadata.unwrap_or_default(),
                 version: remote_blob.version,
             },
         )?;
@@ -417,24 +425,25 @@ impl SyncEngine {
 
         match resolution {
             ConflictResolution::KeepLocal => {
-                // Re-push local version (increment version to force overwrite)
+                // Re-push local version
                 let sync_meta = self.db.get_sync_metadata(project_id)?;
                 let encrypted = self.encrypt_data(&key, &conflict.local_value)?;
 
-                let request = BlobPutRequest {
-                    key: format!("{}/{}", PREFIX_PROJECTS, project_id),
-                    data: encrypted.ciphertext,
-                    nonce: encrypted.nonce,
-                    version: sync_meta.local_version + 1,
-                    metadata: None,
-                };
+                let blob_info = self
+                    .cloud
+                    .storage_put(
+                        project_id,
+                        SYNC_ENV_NAME,
+                        &encrypted.ciphertext,
+                        Some(&encrypted.nonce),
+                    )
+                    .await?;
 
-                let response = self.cloud.blob_put(request).await?;
                 self.db.update_sync_metadata(
                     project_id,
-                    Some(&response.id),
+                    Some(&blob_info.hash),
                     sync_meta.local_version + 1,
-                    Some(response.version),
+                    Some(sync_meta.local_version + 1),
                     false,
                 )?;
             }
@@ -452,24 +461,24 @@ impl SyncEngine {
             ConflictResolution::Merge => {
                 // Merge is complex - for now, just keep local
                 // Future: implement smart merge for variables
-                // Re-push local version (same as KeepLocal)
                 let sync_meta = self.db.get_sync_metadata(project_id)?;
                 let encrypted = self.encrypt_data(&key, &conflict.local_value)?;
 
-                let request = BlobPutRequest {
-                    key: format!("{}/{}", PREFIX_PROJECTS, project_id),
-                    data: encrypted.ciphertext,
-                    nonce: encrypted.nonce,
-                    version: sync_meta.local_version + 1,
-                    metadata: None,
-                };
+                let blob_info = self
+                    .cloud
+                    .storage_put(
+                        project_id,
+                        SYNC_ENV_NAME,
+                        &encrypted.ciphertext,
+                        Some(&encrypted.nonce),
+                    )
+                    .await?;
 
-                let response = self.cloud.blob_put(request).await?;
                 self.db.update_sync_metadata(
                     project_id,
-                    Some(&response.id),
+                    Some(&blob_info.hash),
                     sync_meta.local_version + 1,
-                    Some(response.version),
+                    Some(sync_meta.local_version + 1),
                     false,
                 )?;
             }
